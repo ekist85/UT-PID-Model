@@ -27,9 +27,10 @@ taxable value and does not move when the residential exemption changes. The
 statutory cap does not bind a levy to pay principal of and interest on a voted
 general obligation bond.
 
-*Code:* `ModelConfig.mill_levy_governing_doc`,
-`ModelConfig.validate()` (flags a levy above 15.000 mills, and flags
-`gallagherization = "Yes"` as a Colorado mechanism).
+*Code:* `ModelConfig.mill_levy_governing_doc`, `ModelConfig.mill_levy_indenture`,
+`ModelConfig.mill_levy_cap` (returns the controlling cap),
+`ModelConfig.effective_ds_mill_levy` (holds the target down to it), and
+`ModelConfig.validate()` (flags a levy above the statutory cap).
 
 ---
 
@@ -56,23 +57,35 @@ the Colorado base for the same house, which is why a 3-mill Utah levy does the
 work of a 60-plus-mill Colorado levy.
 
 *Code:* `ModelConfig.resid_taxable_ratio` (0.55),
-`ModelConfig.developed_lot_value` (0.55), `Model._build_taxable_value`.
+`ModelConfig.lot_inventory_taxable_ratio` (0.55),
+`config.RESIDENTIAL_EXEMPTION_HISTORY`, `config.BUILDER_INVENTORY_HISTORY`,
+and `SummaryModel.build`.
 
 ---
 
 ## 3. Reassessment cycle and the value lag
 
-**Colorado.** Reappraisal runs on a biennial cycle, and the template lags new
-value two rows before it reaches the collection year.
+**Colorado.** Reappraisal runs on a biennial cycle: the level of value is set as
+of 30 June the year before an odd-year reappraisal and is **held flat across the
+two-year cycle**, so the base steps up only every other year.
 
 **Utah.** County assessors update values annually based on a systematic review
 of market data, with a detailed review of each parcel at least every five years
-(§ 59-2-303.1). Value created in one calendar year therefore appears on the
-next year's roll — a one-year lag.
+(§ 59-2-303.1). Value created in one calendar year appears on the next year's
+roll, and there is **no hold** — the base steps up every year. That is the
+substantive difference; the total lag to the debt service payment happens to be
+the same two years in both states (see the note below).
 
-*Code:* `ModelConfig.value_lag_years` (1),
+*Code:* `ModelConfig.av_lag_years` (2 — see the note below),
 `ModelConfig.reassess_frequency` ("Annual"),
-`DevelopmentProjections.av_creation_lagged`.
+`DeveloperProjections._is_reassess_year`, `ModelConfig.av_source_year`.
+
+**A note on the lag number.** Both states run a two-year lag from value creation
+to the debt service it supports, by different routes. Utah: created in year *V*
+→ 1 January roll for *V+1* → billed 30 November of *V+1* → pays 1 March of
+*V+2*. Colorado: created in *V* → June-30 level of value → roll for *V+1* →
+collected in *V+2* → pays 1 December of *V+2*. The number is the same; what
+differs is the two-year hold in between, which Utah does not have.
 
 ---
 
@@ -96,7 +109,8 @@ Colorado's 1 December principal. Each year's collections are in hand before the
 payment they support.
 
 *Code:* `ModelConfig.prin_maturity` (3), `ModelConfig.int_maturity` (9),
-`SummaryRow.tax_revenue_date` (one year after the assessment date).
+`ModelConfig._snap_to_payment_date` (call and capitalized-interest dates land on
+a payment date, not an anniversary of closing).
 
 ---
 
@@ -114,7 +128,7 @@ document, or the indentures. A PID levy within its caps therefore carries no
 annual political risk, which is a materially better credit feature than the
 Colorado equivalent.
 
-*Code:* narrative only — memo § 2.
+*Code:* narrative only — `memo.py`, the mill-levy assumption bullet.
 
 ---
 
@@ -131,8 +145,8 @@ proportion in which revenue collected from ad valorem real property tax is
 distributed." The Viridian indenture includes the allocation in Senior Property
 Tax Revenues; the pricing model conservatively credits none of it.
 
-*Code:* `ModelConfig.uniform_fee_prc` (0.00, range `UNIFORM_FEE_PRC`, aliased
-`TAX_COLLECT_SO_PRC`).
+*Code:* `ModelConfig.uniform_fee_prc` (0.00, range `UNIFORM_FEE_PRC`);
+`SummaryRow.uniform_fee_revenue`.
 
 ---
 
@@ -147,7 +161,7 @@ deduction from the taxing entity's distribution. The Viridian indenture still
 defines Senior Property Tax Revenues net of "the collection costs of the
 County", so the input is retained — at 0.00%.
 
-*Code:* `ModelConfig.county_treasurer_fee` (0.00, range
+*Code:* `ModelConfig.county_collection_fee` (0.00, range
 `COUNTY_COLLECTION_FEE`).
 
 ---
@@ -160,14 +174,20 @@ assessed-value limit.
 
 **Utah.** The Viridian PID levies for debt service only; ongoing operations sit
 with the HOA or the city. District administration — accounting, audit, legal,
-assessor filings — is a real cost paid from pledged revenue, so the model
-charges it against the senior lien and does **not** add it back when computing
-what is available to the subordinate lien. (The Colorado template does add it
-back, which double-counts; the Utah workbook in this repo already corrected
-that, and the correction is carried here.)
+assessor and continuing-disclosure filings — is a real cost paid from pledged
+revenue, so it is charged against the senior lien.
 
-*Code:* `ModelConfig.admin_cost_base`, `Model._apply_revenue`,
-`Model._sub_waterfall`.
+Two refinements over the Colorado module, both using inputs that already existed
+there: the administration base **inflates** at `admin_growth_rate` (the Colorado
+`summary.py` charges a flat amount and never reads the growth rate), and nothing
+is charged before `district_cost_start_year` — by default two years after
+closing, which is the first roll set with the bonds outstanding and therefore
+the first year with a full year of collections to charge against. Both bring the
+model onto the reference workbook.
+
+*Code:* `ModelConfig.admin_cost`, `ModelConfig.admin_growth_rate`,
+`ModelConfig.district_cost_start_year`, `ModelConfig.district_costs()` (used by
+both `SummaryModel.build` and the report, so the two cannot disagree).
 
 ---
 
@@ -186,8 +206,8 @@ extinguished as the ground develops, and the projection starts from the
 developed program. Set `DevelopmentProjections.existing_lot_value` if a specific
 deal needs the standing base carried.
 
-*Code:* `DevelopmentProjections.existing_lot_value`,
-`SummaryRow.prior_roll_value`.
+*Code:* `ModelConfig.existing_vacant_land`, `ModelConfig.historical_av`,
+`DeveloperProjections.existing_value_adjustments`.
 
 ---
 
@@ -202,8 +222,8 @@ geothermal resources, and mines with appurtenant machinery (§ 59-2-201). The
 same input rows are retained under Utah names.
 
 *Code:* `ModelConfig.centrally_assessed_value`,
-`ModelConfig.centrally_assessed_ratio` (ranges `CENTRALLY_ASSESSED_*`, aliased
-`OIL_GAS*`).
+`ModelConfig.centrally_assessed_equipment`,
+`ModelConfig.centrally_assessed_ratio`, `ModelConfig.centrally_assessed_av`.
 
 ---
 
@@ -216,5 +236,38 @@ same input rows are retained under Utah names.
 - Utah Admin. Code R884-24P-52 (criteria for determining primary residence)
 - *Viridian Farm Public Infrastructure District No. 1*, Limited Offering
   Memorandum, September 2024 (in this repository)
-- Colorado reference: Silver Peaks No. 6 (PA-4) Metro District analysis, Tierra
-  Financial Advisors (CO-Metro-District-Model repository)
+- Colorado reference: `co_metro_model` on branch
+  `claude/co-metro-district-model-hawhos` of the CO-Metro-District-Model
+  repository — this model is a port of it
+
+
+---
+
+## 12. Module-by-module map
+
+The Utah package mirrors `co_metro_model` file for file. Attribute names are
+kept identical wherever the concept survives, and renamed only where the
+Colorado name names a Colorado mechanism:
+
+| Colorado | Utah | Why |
+|---|---|---|
+| `tabor_current` | `resid_taxable_ratio` | Utah has no TABOR ratio; it has an exemption |
+| `tabor_service_plan` | `resid_taxable_ratio_prior` | no service plan, no gallagherization base |
+| `gallagherization` | *(removed)* | caps are fixed rates; replaced by `mill_levy_cap` |
+| `mill_levy_service_plan` | `mill_levy_governing_doc` (+ `mill_levy_indenture`) | the two caps that actually bind |
+| `biennial_reassess_rate` | `reassess_rate` (+ `reassess_frequency`) | Utah revalues annually |
+| `developed_lot_value` | `lot_inventory_taxable_ratio` | builder inventory, not a vacant-land class |
+| `vacant_land_ratio` | `lot_inventory_ratio` | same |
+| `tax_collect_so_prc` | `uniform_fee_prc` | uniform fee, not specific ownership tax |
+| `county_treasurer_fee` | `county_collection_fee` | no treasurer haircut in Utah |
+| `oil_gas_*` | `centrally_assessed_*` | § 59-2-201 centrally assessed property |
+| `om_carveout` | `admin_cost` | charged against pledged revenue, not an operations levy |
+| `metro_name` | `pid_name` | it is a public infrastructure district |
+| `TABOR_HISTORY` | `RESIDENTIAL_EXEMPTION_HISTORY` | 25% (1982) → 45% (1995) |
+| `VACANT_LAND_HISTORY` | `BUILDER_INVENTORY_HISTORY` | R884-24P-52 treatment |
+| `strict_biennial_av` | `hold_value_flat` | retained as an option, off for Utah |
+
+Everything else — `debt_service.py`, `subordinate.py`, `sources_uses.py`,
+`refunding.py`, `pricing.py`, `scenarios.py` — is the Colorado engine unchanged,
+because the sizing, waterfall, call provisions and refunding mechanics are the
+same in both states.

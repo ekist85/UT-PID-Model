@@ -1,555 +1,346 @@
 """
-memo.py — the financing memorandum.
+memo.py — Generate a Tierra-style reimbursement-analysis memo (HTML) for a Utah
+public infrastructure district financing, populated from the model outputs.
 
-Produces the same memo in two formats from one set of prose:
-
-    memo.md    Markdown, for review and version control
-    memo.docx  Word, for circulation
-
-The memo follows the structure Tierra uses on Colorado metro district
-financings — transaction summary, security and pledged revenue, development
-and absorption, taxable value build, sizing results, sensitivities, and the
-assumption appendix — with the Utah statutory framework substituted for
-Colorado's.
+Mirrors the Texas MUD, Arizona CFD and Colorado metro district reimbursement
+memos in look and structure (right-floated absorption table, assumption bullets,
+bond/reimbursement table, sources & uses), but states Utah assumptions — the
+levy caps under the Public Infrastructure District Act, the 45% primary
+residential exemption, annual reassessment, the 30 November tax due date,
+capitalized interest, the 3-prong DSRF, the subordinate cash-flow note and the
+senior refunding — and pulls the bond program, development schedule and
+reimbursement figures from the model objects.
 """
 
 from __future__ import annotations
 
+import base64
 import os
-from dataclasses import dataclass
 from datetime import date
-from typing import Iterable, Optional, Sequence
-
-from .config import PID_STATUTORY_LEVY_CAP
-from .engine import Model, Results
-
-# ── Small formatting helpers ─────────────────────────────────────────────────
-
-def _m(v: Optional[float]) -> str:
-    return "—" if v is None else f"${v:,.0f}"
 
 
-def _mm(v: Optional[float]) -> str:
-    return "—" if v is None else f"${v / 1e6:,.2f}MM"
+def _logo_data_uri() -> str:
+    """Tierra wordmark as a base64 PNG data URI (self-contained).  '' if missing."""
+    try:
+        path = os.path.join(os.path.dirname(__file__), "assets", "tierra_logo.png")
+        with open(path, "rb") as fh:
+            return "data:image/png;base64," + base64.b64encode(fh.read()).decode("ascii")
+    except Exception:
+        return ""
 
 
-def _p(v: Optional[float], places: int = 2) -> str:
-    return "—" if v is None else f"{v:.{places}%}"
+# Right-floated table style that Word honors (from the Texas / AZ memos).  Word
+# wraps body text around a TABLE carrying mso-table-float (it ignores float on a
+# div), so this lives inline on the <table>; a <div style="clear:both"> after the
+# wrapping paragraphs drops the following block back to full width.
+_FLOAT_TBL = ("float:right; margin-left:14px; margin-bottom:6px; "
+              "mso-table-float:right; mso-table-anchor-vertical:paragraph; "
+              "mso-table-anchor-horizontal:column; mso-table-left:right; mso-table-top:0in;")
+
+_CSS = """
+@page WordSection1 { size: 8.5in 11.0in; margin: 0.5in;
+  mso-margin-top-alt: 0.5in; mso-margin-bottom-alt: 0.5in;
+  mso-margin-left: 0.5in; mso-margin-right: 0.5in;
+  mso-footer: f1; mso-footer-margin: 0.3in; mso-paper-source: 0; }
+div.WordSection1 { page: WordSection1; }
+@page { size: letter; margin: 0.5in; }
+@media screen { body { margin: 0.5in; } }
+.wd-footer { display: none; mso-element: footer; }
+body { font-family: Calibri, Arial, sans-serif; font-size: 11pt; color: #000; line-height: 1.35; margin: 0; }
+.page-header { width: 100%; border-collapse: collapse; border-bottom: 2px solid #002060; margin-bottom: 14px; }
+.page-header td { padding: 0 0 5px 0; vertical-align: middle; }
+.brand { font-size: 16pt; font-weight: bold; color: #002060; }
+.hdr-right { text-align: right; font-style: italic; font-size: 8pt; color: #002060; line-height: 1.6; }
+h1 { font-size: 13pt; color: #002060; margin: 4px 0 2px 0; }
+p { margin: 0 0 7px 0; }
+ul { margin: 3px 0 10px 0; padding-left: 22px; }
+li { margin-bottom: 3px; }
+.re-line { font-weight: bold; margin: 8px 0; }
+td.cap { text-align: right; font-size: 8pt; font-style: italic; color: #555;
+  border-bottom: none; padding-top: 4px; white-space: nowrap; }
+table.data { border-collapse: collapse; font-size: 9pt; white-space: nowrap; }
+table.data th { background: #002060; color: #fff; padding: 4px 14px; text-align: center; font-weight: bold; }
+table.data td { padding: 3px 14px; border-bottom: 1px solid #d9d9d9; text-align: right; }
+table.data td.c { text-align: center; }
+table.data td.l { text-align: left; }
+table.data tr.total td { background: #BDD7EE; font-weight: bold; color: #002060; border-top: 2px solid #002060; }
+table.data tr.sub td { background: #EBF3FB; font-style: italic; }
+.note { font-size: 8pt; font-style: italic; color: #555; }
+.sig { margin-top: 18px; }
+.disclaimer { font-size: 8pt; color: #777; margin-top: 16px; border-top: 1px solid #ccc; padding-top: 6px; }
+"""
 
 
-def _x(v: Optional[float]) -> str:
-    return "—" if v is None else f"{v:.2f}x"
+def _money(x):
+    return f"${x:,.0f}"
 
 
-def _d(v: Optional[date]) -> str:
-    return "—" if v is None else v.strftime("%B %-d, %Y")
+def _md(d):
+    """m/d/yyyy — non-padded month and day."""
+    return f"{d.month}/{d.day}/{d.year}"
 
 
-@dataclass
-class Table:
-    title: str
-    headers: Sequence[str]
-    rows: Sequence[Sequence[str]]
-    note: str = ""
+def build_memo_html(cfg, sm, senior, su, sub=None, refunding=None, dev=None,
+                    output_path: str = "output/ut_pid_model_memo.html",
+                    developer: str = "[Developer / Master Developer]") -> str:
+    """Render the reimbursement memo HTML from the model objects and write it.
+
+    ``cfg`` ModelConfig, ``sm`` built SummaryModel, ``senior`` the senior tranche,
+    ``su`` the first-financing SourcesUses, ``sub`` the SubLienResult (optional),
+    ``refunding`` the RefundingResult (optional), ``dev`` DeveloperProjections.
+    """
+    dev = dev or sm.dev
+    _t = date.today()
+    today = f"{_t.strftime('%B')} {_t.day}, {_t.year}"
+    developer = developer if developer and developer != "[Developer / Master Developer]" \
+        else (cfg.developer or "[Developer / Master Developer]")
+    district = cfg.pid_name or "Utah Public Infrastructure District"
+    # Addressee block — developer name over street and city/state/zip, each line
+    # falling back to a bracketed placeholder when the input is blank.
+    addr_lines = [developer,
+                  cfg.developer_address or "[Address]",
+                  cfg.developer_city_state_zip or "[City/State/Zip]"]
+    addressee_html = "<br>".join(addr_lines)
+
+    # ── Development / absorption summary ───────────────────────────────────
+    closings = {y: int(round(v)) for y, v in dev.home_closings.items() if round(v)}
+    deliveries = {y: int(round(v)) for y, v in dev.lot_deliveries.items() if round(v)}
+    total_homes = sum(closings.values())
+    total_lots = sum(deliveries.values())
+    wasp = getattr(dev, "base_asp", 0.0)
+    peak_av = max((r.total_av for r in sm.rows), default=0.0)
+    total_mkt = total_homes * wasp
+
+    years = sorted(set(closings) | set(deliveries))
+    abs_rows = "".join(
+        f"<tr style='background:{'#F2F2F2' if i % 2 else '#FFFFFF'}'>"
+        f"<td style='text-align:center;padding:0 8px'>{y}</td>"
+        f"<td style='text-align:right;padding:0 8px'>{closings.get(y, 0):,}</td>"
+        f"<td style='text-align:right;padding:0 8px'>{deliveries.get(y, 0):,}</td></tr>"
+        for i, y in enumerate(years))
+
+    # ── Rates / structure pulled from the config ──────────────────────────
+    mill_ds = cfg.mill_levy_ds_target
+    mill_ops = cfg.mill_levy_ops_target
+    mill_total = mill_ds + mill_ops
+    eff_mill = cfg.effective_ds_mill_levy
 
 
-@dataclass
-class Section:
-    heading: str
-    paragraphs: Sequence[str] = ()
-    bullets: Sequence[str] = ()
-    tables: Sequence[Table] = ()
+    from .config import PID_STATUTORY_LEVY_CAP
+    statutory_mills = PID_STATUTORY_LEVY_CAP * 1000.0
 
+    # Builder lot inventory taxable ratio by roll year; show the range applied
+    # over roll years that actually carry inventory.
+    _vl = sorted({cfg.lot_inventory_ratio(y)
+                  for y in range(cfg.first_year, cfg.senior_final_year)
+                  if dev.vacant_lot_market_value(y) > 0})
+    _vl_txt = (f"{_vl[0]:.1%}" if len(_vl) == 1
+               else f"{_vl[0]:.1%}&ndash;{_vl[-1]:.1%}") if _vl else f"{cfg.lot_inventory_taxable_ratio:.1%}"
 
-# ── Content ───────────────────────────────────────────────────────────────────
+    _mill_bullet = (
+        f"A district levy of {mill_total:.3f} mills is assumed &mdash; {mill_ds:.3f} mills for "
+        f"debt service"
+        + (f" and {mill_ops:.3f} mills for operations" if mill_ops else "")
+        + f". The levy is capped at the most restrictive of {statutory_mills:.3f} mills "
+          f"(&sect;&nbsp;17D-4-303), the governing document, and the indentures &mdash; "
+          f"{cfg.mill_levy_cap:.3f} mills here, so {eff_mill:.3f} mills is levied. Utah caps are "
+          f"fixed rates per dollar of taxable value and do not float with the residential "
+          f"exemption, so there is no Colorado-style &ldquo;Gallagherization&rdquo; adjustment. "
+          f"Because the required mill levy stays within those caps, the District need not give "
+          f"Truth in Taxation notice or hold a hearing to impose it.")
 
-def _sensitivities(res: Results) -> Table:
-    """Re-run the model under the standard downside cases."""
-    from dataclasses import replace
-
-    cases = [
-        ("Base case", {}),
-        ("Absorption −25%", {"hypothetical_scenario": "Yes", "absorption_scenario": 0.75,
-                             "lot_delivery_scenario": 0.75}),
-        ("No home price inflation", {"inflation_rate": 0.0}),
-        ("No reassessment growth", {"reassess_rate_resid": 0.0,
-                                    "reassess_rate_resid_sub": 0.0}),
-        ("Collections at 95%", {"tax_collect_mill_prc": 0.95}),
-        ("Coverage at 1.50x", {"dsc_senior_lien_bonds": 1.50}),
+    assumptions = [
+        (f"Development delivers {total_homes:,} homes on {total_lots:,} lots (weighted-average "
+         f"sales price &asymp; {_money(wasp)}); value phases onto the tax roll as homes close."),
+        (f"Lot values are estimated at {cfg.platted_lot_value:.0%} of the average selling price "
+         f"(platted-lot value); a delivered lot&rsquo;s value rolls off lot-inventory value and the "
+         f"finished home rolls on as each home closes."),
+        (f"Utah taxable ratios: {cfg.resid_taxable_ratio:.2%} on primary residential value "
+         f"(the 45% exemption, &sect;&nbsp;59-2-103) and "
+         f"{_vl_txt} on builder lot inventory, which carries the same exemption where the "
+         f"assessor determines the property will be a primary residence once occupied "
+         f"(Utah Admin. Code R884-24P-52)."),
+        _mill_bullet,
+        (f"County assessors revalue annually (&sect;&nbsp;59-2-303.1); value already on the roll "
+         f"grows at {cfg.reassess_rate:.1%} a year. Value created in a calendar year lands on the "
+         f"following 1&nbsp;January roll, is billed that November, and pays debt service the next "
+         f"1&nbsp;March &mdash; a {cfg.av_lag_years}-year lag from creation to the payment it "
+         f"supports."),
+        (f"Home prices and market values escalate at {cfg.inflation_rate:.1%} annually."),
+        (f"A {cfg.tax_collect_mill_prc:.1%} tax-collection rate and a {cfg.interest_earn_rate:.2%} "
+         f"interest-earnings rate on fund balances are assumed."),
+        (f"Senior new-money bonds carry a {cfg.senior_interest_rate:.2%} interest rate, a "
+         f"{cfg.final_mat_yrs}-year final maturity, and are sized to a minimum "
+         f"{cfg.dsc_senior:.2f}x debt-service coverage ratio."),
+        (f"The senior debt-service reserve fund is sized to the 3-prong test (least of 10% of par, "
+         f"maximum annual debt service, or 125% of average annual debt service); interest earnings "
+         f"on fund balances offset debt service."),
     ]
-    rows = []
-    for label, overrides in cases:
-        try:
-            cfg = replace(res.cfg, **overrides) if overrides else res.cfg
-            out = res if not overrides else Model(cfg, res.dev).run()
-        except Exception:                      # a case that cannot be sized
-            rows.append([label, "n/a", "n/a", "n/a", "n/a"])
-            continue
-        rows.append([
-            label, _m(out.senior_par), _m(out.sub_par),
-            _m(out.total_reimbursement), _m(out.reimbursement_per_lot),
-        ])
-    return Table(
-        title="Sensitivity analysis",
-        headers=["Case", "Senior par", "Subordinate par",
-                 "Total reimbursement", "Per lot"],
-        rows=rows,
-        note="Each case re-runs the full model; only the named assumption changes.",
-    )
+    assumptions.append(
+        f"Utah property taxes are levied on value as of 1&nbsp;January and are due in a single "
+        f"payment on 30&nbsp;November, so district principal is structured on 1&nbsp;March with "
+        f"interest on 1&nbsp;March and 1&nbsp;September &mdash; each year&rsquo;s collections are "
+        f"in hand before the payment they support. Delinquent taxes carry a penalty of the greater "
+        f"of 2.5% or $10, and the Public Infrastructure District Act permits the District to impose "
+        f"an additional 7% annual penalty; no penalty revenue is credited here.")
+    if cfg.uniform_fee_prc:
+        assumptions.append(
+            f"Registered personal property pays a uniform fee in lieu of ad valorem tax "
+            f"(&sect;&nbsp;59-2-405), distributed to taxing entities in the same proportion as real "
+            f"property tax; {cfg.uniform_fee_prc:.2%} of the levy is credited.")
+    else:
+        assumptions.append(
+            "No credit is taken for the personal property uniform fee "
+            "(&sect;&nbsp;59-2-405), which would otherwise be distributed to the District in the "
+            "same proportion as real property tax.")
+    assumptions.append(
+        f"County assessing and collecting is funded by a separate statewide levy on property "
+        f"(&sect;&nbsp;59-2-1602) rather than a deduction from the District&rsquo;s distribution, "
+        f"so {cfg.county_collection_fee:.2%} is netted from pledged revenue "
+        f"(a Colorado metropolitan district would lose roughly 1.50% to the county treasurer).")
+    if cfg.capi_term > 0:
+        assumptions.append(
+            f"Capitalized interest (up to {cfg.capi_term} months) is funded from bond proceeds to "
+            f"cover debt service during the initial absorption ramp-up.")
+    if sub is not None and sub.par_amount > 0:
+        assumptions.append(
+            f"A subordinate-lien cash-flow note ({sub.rate:.2%}, interest accretes) is sized to the "
+            f"residual surplus at a {sub.coverage:.2f}x coverage factor and repaid from surplus revenues.")
+    if refunding is not None:
+        rd = cfg.delivery_refunding
+        assumptions.append(
+            f"The senior new-money bonds are refunded at the first optional call "
+            f"({_md(cfg.premium_call_date)}, {cfg.premium_call_price:.0f}% call price) at "
+            f"{cfg.senior_refunding_interest_rate:.2%} / {cfg.dsc_refunding:.2f}x coverage to "
+            f"generate additional new-money reimbursement.")
+    assumptions_html = "".join(f"<li>{a}</li>" for a in assumptions)
 
+    # Certified value already on the rolls (from the inputs), when set.
+    cv_html = ""
+    if cfg.current_certified_value > 0:
+        _asof = f" as of {_md(cfg.certification_date)}" if cfg.certification_date else ""
+        cv_html = (f"<p>The District&rsquo;s certified taxable value{_asof} is "
+                   f"<strong>{_money(cfg.current_certified_value)}</strong>; the model trues Total "
+                   f"Taxable Value to this certified roll in the certification year.</p>")
 
-def build_sections(res: Results) -> list[Section]:
-    cfg, dev = res.cfg, res.dev
-    s, sub = res.senior_stats, res.sub_stats
-    statutory_mills = PID_STATUTORY_LEVY_CAP * 1000
-
-    # Milestones from the projection.
-    first_rev = next((r for r in res.summary if r.senior_levy_collections > 0), None)
-    buildout = next((r for r in reversed(res.summary) if r.residential_units > 0), None)
-    stabilised = max(res.summary, key=lambda r: r.senior_taxable_value)
-
-    sections: list[Section] = []
-
-    sections.append(Section(
-        heading="1. Transaction summary",
-        paragraphs=[
-            f"{cfg.district_name} (the “District”) is a public infrastructure "
-            f"district organized under the Utah Public Infrastructure District Act, "
-            f"Title 17D, Chapter 4, Utah Code, within {cfg.city} City, "
-            f"{cfg.county} County, Utah. This memorandum sets out the projected "
-            f"capacity of the District's limited tax general obligation bonds at a "
-            f"debt service levy of {cfg.mill_levy_ds_target:.3f} mills, and the "
-            f"reimbursement the financing is expected to deliver to "
-            f"{cfg.developer} (the “Developer”).",
-
-            f"On a delivery date of {_d(cfg.delivery)}, the model sizes "
-            f"{_mm(res.senior_par)} of {cfg.senior_bonds_series} senior lien bonds "
-            f"at {_p(cfg.senior_interest_rate, 3)} and {_mm(res.sub_par)} of "
-            f"{cfg.sub_bonds_series} subordinate lien cashflow bonds at "
-            f"{_p(cfg.sub_interest_rate, 3)}. Together they produce "
-            f"{_m(res.total_reimbursement)} of reimbursement to the Developer — "
-            f"approximately {_m(res.reimbursement_per_lot)} per residential unit "
-            f"across {dev.total_units():,} units.",
-        ],
-        tables=[Table(
-            title="Sources and uses",
-            headers=["", "Senior lien", "Subordinate lien", "Total"],
-            rows=[
-                ["Par amount", _m(res.senior_par), _m(res.sub_par), _m(res.total_par)],
-                ["Premium / (discount)", _m(s.premium), _m(0), _m(s.premium)],
-                ["Total sources", _m(res.senior_par + s.premium), _m(res.sub_par),
-                 _m(res.total_par + s.premium)],
-                ["", "", "", ""],
-                ["Developer reimbursement", _m(res.senior_reimbursement),
-                 _m(res.sub_reimbursement), _m(res.total_reimbursement)],
-                ["Debt service reserve / surplus fund", _m(res.surplus_fund_deposit),
-                 _m(0), _m(res.surplus_fund_deposit)],
-                ["Capitalized interest", _m(res.capitalized_interest_deposit),
-                 _m(0), _m(res.capitalized_interest_deposit)],
-                ["Underwriters' discount", _m(res.senior_uwd), _m(res.sub_uwd),
-                 _m(res.senior_uwd + res.sub_uwd)],
-                ["Costs of issuance", _m(cfg.coi), _m(0), _m(cfg.coi)],
-                ["Total uses", _m(res.senior_par + s.premium), _m(res.sub_par),
-                 _m(res.total_par + s.premium)],
-            ],
-        )],
-    ))
-
-    sections.append(Section(
-        heading="2. Security and pledged revenue",
-        paragraphs=[
-            f"The bonds are limited tax general obligations of the District, "
-            f"payable from an ad valorem property tax levied against all taxable "
-            f"property within the District's boundaries. The levy is capped at "
-            f"three levels, the most restrictive of which controls: "
-            f"{statutory_mills:,.3f} mills (0.015 per dollar of taxable value) "
-            f"under Section 17D-4-303, Utah Code; the rate fixed in the District's "
-            f"governing document; and the rate fixed in the indentures. This "
-            f"analysis assumes the controlling rate is "
-            f"{cfg.mill_levy_governing_doc:.3f} mills.",
-
-            "Because the levy securing the required mill levy does not exceed the "
-            "rate established in the Public Infrastructure District Act, the "
-            "governing document, or the indentures, the District is not required "
-            "to give Truth in Taxation notice or hold a public hearing to impose "
-            "it. That distinguishes a Utah PID levy from a levy above the "
-            "certified tax rate, and removes the annual political risk a Colorado "
-            "metropolitan district faces when a service plan cap is approached.",
-
-            f"Property taxes in Utah are levied against taxable value determined as "
-            f"of 1 January and are due on 30 November of the same year. Debt "
-            f"service is therefore structured with principal due "
-            f"{date(2000, cfg.prin_maturity, cfg.prin_maturity_day_senior).strftime('%-d %B')} "
-            f"and interest semi-annually, so each year's collections are in hand "
-            f"before the payment they support. Delinquent taxes carry a penalty of "
-            f"the greater of 2.5% or $10, and the Act permits the District to "
-            f"impose an additional 7% annual penalty. This analysis assumes "
-            f"collections of {_p(cfg.tax_collect_mill_prc)} of the levy and takes "
-            f"no credit for penalty revenue.",
-        ],
-        bullets=[
-            f"Senior lien coverage requirement: {_x(cfg.dsc_senior_lien_bonds)} of "
-            f"net pledged revenue.",
-            f"Subordinate lien coverage requirement: {_x(cfg.dsc_sub_lien_bonds)}; "
-            f"the subordinate bonds are cashflow bonds, paid only from revenue "
-            f"released after senior debt service, with unpaid interest accruing at "
-            f"{_p(cfg.sub_interest_rate, 3)}.",
-            f"Debt service reserve / surplus fund: {_m(res.surplus_fund_deposit)}, "
-            f"sized at the least of 10% of par, 125% of average annual debt "
-            f"service, and maximum annual debt service.",
-            f"Capitalized interest: {_m(res.capitalized_interest_deposit)}, funding "
-            f"interest through {_d(cfg.capi_end_date)} "
-            f"({cfg.capi_term_months} months from closing).",
-            f"Personal property uniform fees (Section 59-2-405, Utah Code) are "
-            f"distributed to the District in the same proportion as real property "
-            f"tax; this analysis credits {_p(cfg.uniform_fee_prc)} of the levy.",
-        ],
-    ))
-
-    absorb_rows = [
-        [p.name, p.product_type, f"{p.total_units:,}", _m(p.asp),
-         f"{min(p.home_closings) if p.home_closings else '—'}",
-         f"{max(p.home_closings) if p.home_closings else '—'}",
-         f"{p.average_absorption():,.0f}"]
-        for p in dev.products if p.total_units
+    # ── Bond program / reimbursement table ─────────────────────────────────
+    sr_par = senior.par_amount
+    sub_par = sub.par_amount if sub is not None else 0.0
+    first_reimb = su.reimbursement
+    first_par = sr_par + sub_par
+    cum = first_reimb
+    rows = [
+        (f"<tr><td class='l'>Senior New-Money Bonds, Series {cfg.delivery.year}A</td>"
+         f"<td class='c'>{_md(cfg.delivery)}</td><td>{_money(sr_par)}</td>"
+         f"<td class='c'>{cfg.senior_interest_rate:.2%}</td><td>&mdash;</td><td>&mdash;</td></tr>"),
     ]
-    absorb_rows.append(["Total", "", f"{dev.total_units():,}", "", "", "", ""])
+    if sub is not None and sub_par > 0:
+        rows.append(
+            f"<tr><td class='l'>Subordinate Lien Cash-Flow Note</td>"
+            f"<td class='c'>{_md(cfg.delivery)}</td><td>{_money(sub_par)}</td>"
+            f"<td class='c'>{sub.rate:.2%}</td><td>&mdash;</td><td>&mdash;</td></tr>")
+    rows.append(
+        f"<tr class='sub'><td class='l'>First Financing &mdash; Net Reimbursement</td>"
+        f"<td class='c'></td><td>{_money(first_par)}</td><td class='c'></td>"
+        f"<td>{_money(first_reimb)}</td><td>{_money(cum)}</td></tr>")
+    total_reimb = first_reimb
+    if refunding is not None:
+        rd = cfg.delivery_refunding
+        rb = refunding.refunding_bond
+        add = refunding.new_money_reimbursement
+        cum += add
+        total_reimb += add
+        rows.append(
+            f"<tr><td class='l'>Senior Refunding Bonds, Series {rd.year}</td>"
+            f"<td class='c'>{_md(rd)}</td><td>{_money(rb.par_amount)}</td>"
+            f"<td class='c'>{cfg.senior_refunding_interest_rate:.2%}</td>"
+            f"<td>{_money(add)}</td><td>{_money(cum)}</td></tr>")
+    rows.append(
+        f"<tr class='total'><td class='c'>Total Developer Reimbursement</td><td></td><td></td>"
+        f"<td></td><td>{_money(total_reimb)}</td><td>{_money(total_reimb)}</td></tr>")
+    bond_rows = "".join(rows)
 
-    sections.append(Section(
-        heading="3. Development program and absorption",
-        paragraphs=[
-            f"The development comprises {dev.total_units():,} residential units "
-            f"across {len([p for p in dev.products if p.total_units])} product "
-            f"types. Finished lots are delivered to the builder roughly "
-            f"{cfg.home_lot_delivery_lead_months} months before the first home "
-            f"closing, and closings run from "
-            f"{min((min(p.home_closings) for p in dev.products if p.home_closings), default='—')} "
-            f"through "
-            f"{max((max(p.home_closings) for p in dev.products if p.home_closings), default='—')}. "
-            f"Home prices are inflated at {_p(cfg.inflation_rate)} per year from "
-            f"the {cfg.resid_delivery_year.year} base.",
-        ],
-        tables=[Table(
-            title="Residential program",
-            headers=["Product", "Type", "Units", "Base ASP",
-                     "First closing", "Last closing", "Avg. annual absorption"],
-            rows=absorb_rows,
-        )],
-    ))
+    # ── Sources & Uses (first financing) ──────────────────────────────────
+    su_rows = "".join(
+        f"<tr><td class='l'>{k}</td><td>{_money(v)}</td></tr>"
+        for k, v in su.uses.items())
+    total_uses = sum(su.uses.values())
 
-    tv_rows = [
-        [str(r.assessment_date.year), f"{r.lot_units:,.0f}",
-         f"{r.residential_units:,.0f}", _m(r.lot_taxable_value),
-         _m(r.new_home_taxable_value), _m(r.senior_taxable_value),
-         _m(r.senior_net_revenue)]
-        for r in res.summary[:20]
-    ]
+    logo_uri = _logo_data_uri()
+    brand_cell = (f'<img src="{logo_uri}" alt="Tierra Financial Advisors" width="60" height="45" '
+                  f'style="width:60px;height:45px;vertical-align:middle">' if logo_uri
+                  else '<span class="brand">Tierra Financial Advisors</span>')
+    header_html = (
+        f'<table class="page-header"><tr><td>{brand_cell}</td>'
+        f'<td class="hdr-right">Reimbursement Analysis &ndash; {district}<br>{today}</td>'
+        f'</tr></table>')
 
-    sections.append(Section(
-        heading="4. Taxable value",
-        paragraphs=[
-            "Utah taxes primary residential property on 55% of fair market value — "
-            "the 45% primary residential exemption under Section 59-2-103, Utah "
-            "Code, which reaches up to one acre of land per residential unit. "
-            "Finished lots held in builder inventory are carried at the same "
-            "ratio: Utah Admin. Code R884-24P-52 allows the residential exemption "
-            "on unoccupied property the county assessor determines will qualify as "
-            "a primary residence once occupied. This is the single largest "
-            "difference from the Colorado template, where homes are assessed at "
-            "the residential rate (6.7% in the reference model) and vacant land at "
-            "the 29% non-residential rate.",
+    html = f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>Reimbursement Analysis — {district}</title><style>{_CSS}</style></head><body>
 
-            f"County assessors revalue annually, so value created in one calendar "
-            f"year appears on the following year's roll — a "
-            f"{cfg.value_lag_years}-year lag, against the two-year lag Colorado's "
-            f"biennial reassessment cycle produces. Values already on the roll are "
-            f"grown at {_p(cfg.reassess_rate_resid)} per year. Finished lots are "
-            f"carried at {_p(cfg.platted_lot_value)} of the eventual home price "
-            f"until a home closes on them.",
+<div class="wd-footer" id="f1">
+  <p style="font-style:italic;font-size:8pt;color:#555;margin:0;text-align:left">Preliminary, subject to change.</p>
+</div>
 
-            f"Taxable value first supports a levy in "
-            f"{first_rev.assessment_date.year if first_rev else '—'}, reaches "
-            f"{_m(buildout.senior_taxable_value) if buildout else '—'} at buildout "
-            f"in {buildout.assessment_date.year if buildout else '—'}, and grows "
-            f"to {_m(stabilised.senior_taxable_value)} by "
-            f"{stabilised.assessment_date.year} on reassessment alone.",
-        ],
-        tables=[Table(
-            title="Taxable value and pledged revenue build",
-            headers=["Assessment year", "Lots delivered", "Homes closed",
-                     "Lot taxable value", "Home taxable value",
-                     "Total taxable value", "Net pledged revenue"],
-            rows=tv_rows,
-            note="First twenty projection years; the full series is on the Summary tab.",
-        )],
-    ))
+<div class="WordSection1">
 
-    ds_rows = [
-        [str(r.payment_date.year), _m(r.principal), _m(r.interest * 2),
-         _m(r.annual_net), _m(r.revenue), _x(r.actual_coverage)]
-        for r in res.senior
-        if r.payment_date.month == cfg.prin_maturity and (r.annual_net or r.principal)
-    ]
+{header_html}
 
-    sections.append(Section(
-        heading="5. Sizing results and debt service",
-        paragraphs=[
-            f"Principal is solved backwards from the final maturity: in each year "
-            f"the projected net pledged revenue is divided by the "
-            f"{_x(cfg.dsc_senior_lien_bonds)} coverage requirement, the coupon "
-            f"generated by later maturities is removed, and the balance is turned "
-            f"into principal in $5,000 denominations. The result is "
-            f"{_mm(res.senior_par)} of senior bonds with an average life of "
-            f"{s.average_life:.2f} years, final maturity {_d(s.final_maturity)}, "
-            f"maximum annual debt service of {_m(s.max_annual_debt_service)} and "
-            f"total debt service of {_m(s.total_debt_service)}.",
+<h1>Reimbursement Analysis — {district}</h1>
+<p>{today}</p>
+<p>{addressee_html}</p>
+<p>Dear {developer},</p>
+<p class="re-line">RE: {district} &ndash; Reimbursement Analysis</p>
 
-            f"The arbitrage TIC is {_p(s.arbitrage_tic, 3)} and the all-in TIC, "
-            f"including the underwriters' discount and costs of issuance, is "
-            f"{_p(s.all_in_tic, 3)}. Subordinate bonds of {_mm(res.sub_par)} are "
-            f"sized to the largest amount the residual cashflow retires in full — "
-            f"principal and accrued interest — by {_d(sub.final_maturity)}. Total "
-            f"debt service across both liens is "
-            f"{_m(s.total_debt_service + sub.total_debt_service)}, a repayment "
-            f"ratio of {_x(res.repayment_ratio)} on the reimbursement delivered.",
-        ],
-        tables=[Table(
-            title="Senior lien debt service",
-            headers=["Year", "Principal", "Interest", "Net debt service",
-                     "Net pledged revenue", "Coverage"],
-            rows=ds_rows,
-            note="Net of capitalized interest and surplus fund earnings.",
-        )],
-    ))
+<table class="data" style="width:2.1in; {_FLOAT_TBL}">
+  <tr><th>Year</th><th>Homes</th><th>Lots</th></tr>
+  {abs_rows}
+  <tr class="total"><td class="c">Total</td><td>{total_homes:,}</td><td>{total_lots:,}</td></tr>
+  <tr><td class="cap" colspan="3">WASP &asymp; {_money(wasp)} · Peak Taxable Value &asymp; {_money(peak_av)}</td></tr>
+</table>
 
-    sections.append(Section(
-        heading="6. Sensitivities",
-        paragraphs=[
-            "The capacity of the financing is driven by absorption pace, home "
-            "prices and the reassessment assumption. The cases below re-run the "
-            "full model with one assumption changed at a time.",
-        ],
-        tables=[_sensitivities(res)],
-    ))
+<p>We have prepared the attached reimbursement analysis for {district} (the
+&ldquo;District&rdquo;) as requested by the developer. The analysis sizes a senior / subordinate
+Utah public infrastructure district financing and a subsequent senior refunding, held within the
+levy caps that bind a public infrastructure district under the Public Infrastructure District
+Act, Title&nbsp;17D, Chapter&nbsp;4, Utah Code. The following is a summary of the assumptions used
+in the analysis:</p>
 
-    sections.append(Section(
-        heading="7. How this differs from the Colorado model",
-        paragraphs=[
-            "The model is the Colorado metropolitan district template — same tabs, "
-            "same layout, same sizing mechanics. The substantive changes are the "
-            "ones Utah law requires.",
-        ],
-        tables=[Table(
-            title="Colorado metropolitan district vs. Utah PID",
-            headers=["Item", "Colorado", "Utah (this model)"],
-            rows=[
-                ["Enabling act", "Title 32, Article 1, C.R.S. (special districts)",
-                 "Title 17D, Chapter 4, Utah Code (PID Act)"],
-                ["Levy cap", "Service plan mill levy cap, adjusted for changes in "
-                             "the residential assessment rate",
-                 f"Least of {statutory_mills:,.3f} mills by statute, the governing "
-                 f"document cap, and the indenture cap — no adjustment mechanism"],
-                ["Residential assessment",
-                 "Gallagher / statutory residential assessment rate (6.7% in the "
-                 "reference model); vacant land at 29%",
-                 f"45% primary residential exemption → {_p(cfg.resid_taxable_ratio)} "
-                 f"of fair market value; builder inventory at the same ratio under "
-                 f"R884-24P-52"],
-                ["Levy cap adjustment", "Gallagherization of the service plan cap",
-                 "None — the cap is a fixed rate per dollar of taxable value"],
-                ["Reassessment cycle", "Biennial",
-                 f"Annual → a {cfg.value_lag_years}-year lag from value creation "
-                 f"to the tax roll"],
-                ["Tax due dates", "Half 28 February / half 15 June (or full 30 April)",
-                 "Single payment, 30 November"],
-                ["Principal payment date", "1 December",
-                 f"{date(2000, cfg.prin_maturity, cfg.prin_maturity_day_senior).strftime('%-d %B')}"],
-                ["Vehicle tax revenue",
-                 "Specific ownership tax, ~6–8% of the levy",
-                 f"Personal property uniform fee (Section 59-2-405), distributed "
-                 f"pro rata; credited at {_p(cfg.uniform_fee_prc)}"],
-                ["County collection cost",
-                 "County treasurer fee deducted from the distribution (~1.5%)",
-                 f"Recovered through a separate statewide levy on property "
-                 f"(Section 59-2-1602); {_p(cfg.county_treasurer_fee)} deducted here"],
-                ["Rate increase procedure",
-                 "TABOR election for new mill levies",
-                 "Truth in Taxation hearing above the certified tax rate; the "
-                 "required mill levy is exempt while within the caps"],
-                ["Operations levy",
-                 "Separate operations and maintenance mill levy",
-                 "None assumed — district administration is charged against "
-                 "pledged revenue"],
-                ["Agricultural land", "Agricultural classification",
-                 "Greenbelt Reduction (Section 59-2-503) with up to five years of "
-                 "rollback tax on withdrawal — a Developer obligation"],
-            ],
-        )],
-    ))
+{cv_html}
 
-    appendix_rows = [
-        ["Delivery date", _d(cfg.delivery)],
-        ["First interest — senior / subordinate",
-         f"{_d(cfg.first_int)} / {_d(cfg.first_int_sub)}"],
-        ["First principal", _d(s.first_maturity)],
-        ["Final maturity — senior / subordinate",
-         f"{_d(s.final_maturity)} / {_d(sub.final_maturity)}"],
-        ["Premium call / par call",
-         f"{_d(cfg.premium_call_first)} at {cfg.premium_call_price:.0f} / "
-         f"{_d(cfg.par_call_first)}"],
-        ["Senior / subordinate interest rate",
-         f"{_p(cfg.senior_interest_rate, 3)} / {_p(cfg.sub_interest_rate, 3)}"],
-        ["Senior / subordinate coverage",
-         f"{_x(cfg.dsc_senior_lien_bonds)} / {_x(cfg.dsc_sub_lien_bonds)}"],
-        ["Debt service mill levy", f"{cfg.mill_levy_ds_target:.3f} mills"],
-        ["Statutory levy cap (17D-4-303)", f"{statutory_mills:,.3f} mills"],
-        ["Primary residential taxable ratio", _p(cfg.resid_taxable_ratio)],
-        ["Developed lot taxable ratio", _p(cfg.developed_lot_value)],
-        ["Finished lot value (% of ASP)", _p(cfg.platted_lot_value)],
-        ["Property tax collection rate", _p(cfg.tax_collect_mill_prc)],
-        ["Annual reassessment — existing / new",
-         f"{_p(cfg.reassess_rate_resid)} / {_p(cfg.reassess_rate_resid_sub)}"],
-        ["Home price inflation", _p(cfg.inflation_rate)],
-        ["Value lag", f"{cfg.value_lag_years} year(s)"],
-        ["Underwriters' discount — senior / subordinate",
-         f"{_p(cfg.uwd_senior)} / {_p(cfg.uwd_sub)}"],
-        ["Costs of issuance", _m(cfg.coi)],
-        ["Trustee fee — senior / subordinate",
-         f"{_m(cfg.trustee_fee)} / {_m(cfg.trustee_fee_sub)}"],
-        ["Annual district administration",
-         f"{_m(cfg.admin_cost_base)} growing at {_p(cfg.admin_cost_growth)}"],
-        ["Interest earnings rate", _p(cfg.interest_earn_rate)],
-        ["Capitalized interest period", f"{cfg.capi_term_months} months"],
-    ]
+<ul>{assumptions_html}</ul>
+<div style="clear:both;"></div>
 
-    sections.append(Section(
-        heading="Appendix A — Key assumptions",
-        tables=[Table(title="", headers=["Assumption", "Value"], rows=appendix_rows)],
-    ))
+<p>The following table reflects the assumptions above. The estimated bond reimbursement amount is
+the net proceeds remaining after subtracting the debt-service reserve fund, capitalized interest,
+underwriter&rsquo;s discount and costs of issuance.</p>
 
-    if res.warnings:
-        sections.append(Section(
-            heading="Appendix B — Model notes",
-            bullets=list(res.warnings),
-        ))
+<table class="data">
+  <tr><th>Financing</th><th>Delivery Date</th><th>Par Amount</th><th>Rate</th>
+      <th>Est. Reimbursement</th><th>Cumulative Reimb.</th></tr>
+  {bond_rows}
+</table>
 
-    return sections
+<p style="margin-top:10px">The first financing (senior new-money bonds{' plus the subordinate-lien note' if sub is not None and sub_par > 0 else ''})
+applies its sources as follows:</p>
 
+<table class="data" style="width:3.3in">
+  <tr><th style="text-align:left">Uses of Funds — First Financing</th><th>Amount</th></tr>
+  {su_rows}
+  <tr class="total"><td class="l">Total Uses</td><td>{_money(total_uses)}</td></tr>
+</table>
 
-# ── Renderers ─────────────────────────────────────────────────────────────────
+<p style="margin-top:12px">Please call us if you have any questions or if we can be of any further assistance.</p>
+<div class="sig">Sincerely,<br><br>Evan Kist, CFA&nbsp;&nbsp;|&nbsp;&nbsp;Tierra Financial Advisors<br>
+M: 817-357-9192&nbsp;&nbsp;E: edkist@tierrafa.com</div>
 
-def _memo_header(res: Results) -> tuple[str, list[tuple[str, str]]]:
-    cfg = res.cfg
-    title = "Financing Memorandum"
-    meta = [
-        ("To", cfg.developer),
-        ("From", "Tierra Financial Advisors, LLC"),
-        ("Re", f"{cfg.district_name} — Limited Tax General Obligation Bonds"),
-        ("Levy", f"{cfg.mill_levy_ds_target:.3f} mills for debt service"),
-        ("Date", date.today().strftime("%B %-d, %Y")),
-    ]
-    return title, meta
+<div class="disclaimer">Preliminary and subject to change. This analysis is based on developer-provided
+assumptions and is for discussion purposes only; it is not a recommendation or an offer to sell securities.</div>
 
+</div>
+</body></html>"""
 
-def write_markdown(res: Results, path: str) -> str:
-    title, meta = _memo_header(res)
-    out: list[str] = [f"# {title}", ""]
-    out += [f"**{k}:** {v}  " for k, v in meta]
-    out += ["", "---", ""]
-
-    for section in build_sections(res):
-        out += [f"## {section.heading}", ""]
-        for para in section.paragraphs:
-            out += [para, ""]
-        for bullet in section.bullets:
-            out.append(f"- {bullet}")
-        if section.bullets:
-            out.append("")
-        for table in section.tables:
-            if table.title:
-                out += [f"**{table.title}**", ""]
-            out.append("| " + " | ".join(table.headers) + " |")
-            out.append("|" + "|".join("---" for _ in table.headers) + "|")
-            for row in table.rows:
-                out.append("| " + " | ".join(str(c) for c in row) + " |")
-            out.append("")
-            if table.note:
-                out += [f"*{table.note}*", ""]
-
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    with open(path, "w") as f:
-        f.write("\n".join(out).rstrip() + "\n")
-    return path
-
-
-def write_docx(res: Results, path: str) -> str:
-    from docx import Document
-    from docx.enum.text import WD_ALIGN_PARAGRAPH
-    from docx.shared import Pt, RGBColor
-
-    title, meta = _memo_header(res)
-    doc = Document()
-
-    style = doc.styles["Normal"]
-    style.font.name = "Calibri"
-    style.font.size = Pt(10)
-
-    heading = doc.add_paragraph()
-    run = heading.add_run(title)
-    run.bold = True
-    run.font.size = Pt(18)
-    run.font.color.rgb = RGBColor(0x18, 0x29, 0x57)
-
-    for key, value in meta:
-        p = doc.add_paragraph()
-        r = p.add_run(f"{key}: ")
-        r.bold = True
-        p.add_run(value)
-        p.paragraph_format.space_after = Pt(2)
-
-    doc.add_paragraph("_" * 78)
-
-    for section in build_sections(res):
-        h = doc.add_heading(section.heading, level=1)
-        for r in h.runs:
-            r.font.color.rgb = RGBColor(0x18, 0x29, 0x57)
-        for para in section.paragraphs:
-            p = doc.add_paragraph(para)
-            p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-        for bullet in section.bullets:
-            doc.add_paragraph(bullet, style="List Bullet")
-        for table in section.tables:
-            if table.title:
-                p = doc.add_paragraph()
-                p.add_run(table.title).bold = True
-            t = doc.add_table(rows=1, cols=len(table.headers))
-            t.style = "Light Grid Accent 1"
-            for i, header in enumerate(table.headers):
-                cell = t.rows[0].cells[i]
-                cell.text = str(header)
-                for para in cell.paragraphs:
-                    for r in para.runs:
-                        r.bold = True
-                        r.font.size = Pt(8)
-            for row in table.rows:
-                cells = t.add_row().cells
-                for i, value in enumerate(row):
-                    cells[i].text = str(value)
-                    for para in cells[i].paragraphs:
-                        for r in para.runs:
-                            r.font.size = Pt(8)
-            if table.note:
-                p = doc.add_paragraph()
-                r = p.add_run(table.note)
-                r.italic = True
-                r.font.size = Pt(8)
-
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    doc.save(path)
-    return path
-
-
-def build_memo(res: Results, base_path: str) -> list[str]:
-    """Write memo.md and memo.docx next to each other; return both paths."""
-    root = base_path[:-3] if base_path.endswith(".md") else base_path
-    return [write_markdown(res, root + ".md"), write_docx(res, root + ".docx")]
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as fh:
+        fh.write(html)
+    return output_path

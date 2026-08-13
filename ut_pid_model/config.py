@@ -1,31 +1,45 @@
 """
-config.py — every input on the "Inputs - First" tab, as a dataclass.
+config.py — All named-range inputs from the "Inputs" sheet.
 
-Layout parity
--------------
-The row numbers in `INPUT_ROWS` below are the *actual* rows on the
-"Inputs - First" tab, and they match the Colorado metro district template
-one-for-one.  `ut_pid_model.workbook` writes the tab straight from this table,
-so the Python model and the Excel output can never drift apart.
+Utah counterpart of ``co_metro_model/config.py``: same structure, same
+attribute names wherever the concept survives, with the Colorado mechanics
+replaced by their Utah equivalents.
 
-Colorado → Utah
----------------
-Three Colorado concepts have no Utah analogue and are re-labelled (the range
-names carry the Utah term, with the Colorado name kept as an alias so the two
-workbooks stay diff-able):
+To change an assumption, edit the value here, or pass overrides to
+``ModelConfig(...)``.
 
-    Colorado                                Utah
-    ------------------------------------    ------------------------------------
-    Gallagher residential assessment rate    Primary Residential Exemption
-      (TABOR_PRIOR / TABOR_CURRENT)            (RESID_TAXABLE_RATIO = 55%)
-    Gallagherization of the service plan     n/a — Utah caps are stated as a
-      mill levy                                fixed rate per dollar of value
-    Specific Ownership Tax                   Personal property uniform fee
-      (motor vehicles, Art. X §6)              (UCA 59-2-405, distributed pro rata)
+What Utah does differently
+--------------------------
 
-Defaults are the Viridian Farm PID No. 1 (Salem City, Utah County) financing
-priced 9/17/2024 — the deal in this repo — so a bare `ModelConfig()` reproduces
-that transaction.
+  * **Taxable value, not an assessment ratio.**  Primary residential property
+    is taxed on 55% of fair market value — the 45% primary residential
+    exemption (Utah Const. art. XIII, § 3; Utah Code § 59-2-103), covering the
+    dwelling and up to one acre of land.  Colorado's TABOR residential ratio
+    (~6.7%) has no Utah analogue.
+  * **Annual reassessment.**  County assessors revalue every year (§ 59-2-303.1),
+    so there is no biennial hold and no odd/even reappraisal phase.
+  * **Levy caps are fixed rates, not gallagherized.**  A PID's levy for all
+    purposes may not exceed 0.015 per dollar of taxable value — 15.000 mills
+    (§ 17D-4-303) — and the governing document and indentures usually set a
+    lower rate.  The most restrictive controls, and none of them float with the
+    residential exemption, so there is no Colorado-style "gallagherization".
+  * **Taxes are due 30 November in a single payment**, so debt service is
+    structured with principal on 1 March rather than Colorado's 1 December.
+  * **Personal property uniform fee**, not specific ownership tax.  Registered
+    personal property pays a uniform fee in lieu of ad valorem tax
+    (§ 59-2-405), distributed to taxing entities in the same proportion as real
+    property tax.
+  * **No county treasurer haircut.**  Assessing and collecting is funded by a
+    separate statewide levy on property (§ 59-2-1602), not by a deduction from
+    the district's distribution.
+  * **Truth in Taxation, not TABOR.**  A rate above the certified tax rate needs
+    notice and a hearing, but the PID Act exempts the required mill levy while
+    it stays within the caps above.
+
+Everything else — the layered senior / subordinate lien structure, the
+revenue-wrap sizing, the capitalized-interest and debt-service-reserve
+mechanics, and the senior refunding that generates "new money" — is the same
+as Colorado, and is modeled the same way.
 """
 
 from __future__ import annotations
@@ -34,335 +48,591 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Optional
 
-from .xlfin import edate
+
+@dataclass
+class ModelConfig:
+    """
+    Central parameter store.  Defaults mirror the Viridian Farm Public
+    Infrastructure District No. 1 financing (Salem City, Utah County) priced
+    17 September 2024 — the reference deal in this repository.
+
+    Override any field to run a what-if scenario.
+    """
+
+    # ── Basic project information ──────────────────────────────────────────
+    pid_name: str = "Viridian Farm Public Infrastructure District No. 1"  # PID
+    city: str = "Salem"                                            # CITY
+    county: str = "Utah"                                           # COUNTY
+    developer: str = "D.R. Horton"                                 # DEVELOPER
+    developer_address: str = ""                                    # DEVELOPER_ADDRESS (street)
+    developer_city_state_zip: str = ""                             # DEVELOPER_CITY_STATE_ZIP
+
+    # Current certified assessed value of the district and the date that value
+    # was certified by the county assessor (the starting AV base on the rolls).
+    current_certified_value: float = 0           # CURRENT_CERTIFIED_VALUE
+    certification_date: Optional[date] = None    # CERTIFICATION_DATE
+    # Itemized existing-value components on the certified rolls.  Existing vacant
+    # land and existing residential value are ONE-TIME amounts counted only in
+    # the first collection year (not dragged down every year); "exempt" is a
+    # constant subtraction from the assessed base every year.  (state_assessed,
+    # below, is the existing state-assessed component, added every year.)
+    existing_vacant_land: float = 0              # EXISTING_VACANT_LAND (one-time)
+    existing_residential_value: float = 0        # EXISTING_RESIDENTIAL_VALUE (one-time)
+    exempt_value: float = 0                      # EXEMPT_VALUE (subtracted)
+
+    # Historical certified values for up to 4 prior roll years, entered in the
+    # side table on the Inputs tab.  {roll_year: {"vacant_land", "residential",
+    # "state_assessed", "exempt"}}.  Used to true up historical values in the AV
+    # build (true-up logic TBD — captured here so the data pipeline is in place).
+    historical_av: Optional[dict[int, dict[str, float]]] = None
+
+    # ── Financing toggles ──────────────────────────────────────────────────
+    second_financing: str = "No"        # SECOND_FINANCING
+    refund_financing: str = "Yes"       # REFUND_FINANCING — refinance senior new-money bonds
+    capi: str = "Yes"                   # CAPI — capitalize interest?
+    surplus_on_off: str = "Yes"         # SURPLUS_ON_OFF
+    surplus_release_sizing: str = "Yes" # SURPLUS_RELEASE_SIZING
+    ig_rated: str = "No"                # IG_RATED — investment grade?
+
+    # ── Fees ────────────────────────────────────────────────────────────────
+    coi: float = 400_000                # COI — costs of issuance (first)
+    coi_refunding: float = 200_000      # COI_REFUNDING
+    uwd_senior: float = 0.01            # UWD_SENIOR — underwriter's discount
+    uwd_sub: float = 0.015              # UWD_SUB
+    uwd_senior_refunding: float = 0.005 # UWD_SENIOR_REFUNDING
+    # Utah funds assessing and collecting through a separate statewide levy on
+    # property (§ 59-2-1602) rather than a haircut on the district's
+    # distribution, so this is 0.00 where Colorado runs ~1.50%.  The indentures
+    # still define pledged revenue net of county collection costs, so the input
+    # stays available.
+    county_collection_fee: float = 0.0  # COUNTY_COLLECTION_FEE
+    trustee_fee: float = 4_000          # TRUSTEE_FEE (senior, annual)
+    trustee_fee_sub: float = 3_000      # TRUSTEE_FEE_SUB (annual)
+    bond_insurance_rate: float = 0.0    # surety / bond-insurance % of total DS (refunding)
+
+    # ── Structuring / dates ─────────────────────────────────────────────────
+    delivery: date = field(default_factory=lambda: date(2024, 9, 26))   # DELIVERY
+    # Utah property taxes are due 30 November in a single payment, so principal
+    # falls on 1 March — the first payment date after collections are in hand.
+    # (Colorado's Feb/June collections put principal on 1 December.)
+    prin_maturity: int = 3              # PRIN_MATURITY (month principal is paid)
+    int_maturity: int = 9               # INT_MATURITY  (prin + 6)
+    prin_maturity_day_senior: int = 1   # PRIN_MATURITY_DAY_SENIOR
+    prin_maturity_day_sub: int = 15     # PRIN_MATURITY_DAY_SUB
+
+    capi_term: int = 36                 # CAPI_TERM (months of capitalized interest)
+
+    final_mat_yrs: int = 29             # FINAL_MAT_YRS (senior)
+    final_mat_sub_yrs: int = 29         # FINAL_MAT_SUB_YRS
+    final_mat_yrs_refunding: int = 30   # FINAL_MAT_YRS_REFUNDING
+
+    premium_call_years: int = 5         # B54 — years to first (premium) call
+    # PREMIUM_CALL_FIRST_PRICE — par + this premium at the first call, then the
+    # premium steps down 1.00%/yr to par (the par call date is derived from it).
+    premium_call_price: float = 103
+
+    # ── Interest rates ───────────────────────────────────────────────────────
+    senior_interest_rate: float = 0.05875         # SENIOR_INTEREST_RATE (coupon)
+    senior_refunding_interest_rate: float = 0.045 # SENIOR_REFUNDING_INTEREST_RATE
+    sub_interest_rate: float = 0.08125            # SUB_INTEREST_RATE
+    # Optional reoffering YIELDs (flat).  When set below the coupon the bonds
+    # price at a premium (priced to the worst call), generating premium proceeds;
+    # None ⇒ priced at par (yield = coupon, no premium/OID).
+    senior_reoffering_yield: Optional[float] = None
+    senior_refunding_reoffering_yield: Optional[float] = None
+
+    # Pricing-day debt structure (preliminary analysis uses the single flat rate
+    # above; on pricing day coupons AND yields vary by maturity, and serial
+    # maturities can be grouped into term bonds).  All optional / None ⇒ flat.
+    senior_coupon_scale: Optional[dict] = None          # {maturity_year: coupon}
+    senior_yield_scale: Optional[dict] = None           # {maturity_year: yield}
+    senior_term_bonds: Optional[list] = None            # [(first_year, last_year, term_yield)]
+    senior_refunding_coupon_scale: Optional[dict] = None
+    senior_refunding_yield_scale: Optional[dict] = None
+    senior_refunding_term_bonds: Optional[list] = None
+
+    # ── Debt-service coverage ────────────────────────────────────────────────
+    dsc_senior: float = 1.30            # DSC_SENIOR_LIEN_BONDS
+    dsc_sub: float = 1.0                # DSC_SUB_LIEN_BONDS
+    dsc_refunding: float = 1.2          # DSC_REFUNDING_BONDS
+
+    # ── Sizing amounts — dynamically computed from the district's future AV and
+    # the resulting tax revenue (None ⇒ derive; set a value only to override).
+    #   • senior DSRF: 3-prong test (10% of par / max annual DS / 125% avg DS)
+    #   • sub par:     largest par the residual surplus repays by maturity
+    #   • refunding surplus on hand / sub escrow: accumulated surplus and the
+    #     outstanding subordinate balance at the refunding date
+    senior_dsrf_deposit: Optional[float] = None
+    sub_par: Optional[float] = None
+    refunding_surplus_on_hand: Optional[float] = None
+    refunding_sub_escrow: Optional[float] = None
+
+    # ── Surplus / debt-service-reserve fund ──────────────────────────────────
+    interest_earn_rate: float = 0.025   # INTEREST_EARN_RATE (on DSRF / surplus)
+    # SURPLUS_FUND_TARGET — the operating surplus fund builds to half of the
+    # maximum senior annual debt service before excess cash flows to the sub lien.
+    surplus_fund_target_factor: float = 0.5
+
+    # ── Taxable-value timing lag (Utah) ──────────────────────────────────────
+    # Value is set as of 1 January, appears on that year's roll, and the taxes
+    # are due 30 November of the SAME year — funding the following 1 March debt
+    # service payment.  So value created during calendar year V lands on the roll
+    # for V+1, is collected in V+1, and pays debt service in V+2: a two-year lag
+    # from value creation to the debt service it supports.
+    #
+    # Colorado reaches the same two-year lag by a different route (value set from
+    # a June-30 level of value the year before a biennial reappraisal, collected
+    # the year AFTER the roll).  Same number of years; different mechanism, and
+    # different behaviour in between — Utah revalues every year, so there is no
+    # two-year hold.
+    av_lag_years: int = 2               # market-value-to-collection lag (years)
+
+    # Strict statutory "level of value" two-year hold.  When True, the assessed
+    # value backing a collection year uses the level of value set at the most
+    # recent odd (reappraisal) levy year and is held flat across the two-year
+    # cycle — matching the Colorado statutory methodology (collection years are
+    # reappraised in {even, odd} pairs).  When False (default) the model layers
+    # in new development value each year on a simple lag, matching the
+    # practitioner workbook (Wolf Creek) the model is validated against.
+    hold_value_flat: bool = False
+
+    # Colorado reassessment cycle phase.  Colorado reappraises real property on
+    # a two-year cycle in ODD-numbered (re-valuation) years; even years are
+    # intervening years where value carries over.  Set True for an even-year
+    # cycle.
+    reassess_on_even_years: bool = False
+
+    # Time-varying taxable-ratio schedules, keyed by COLLECTION year.  A missing
+    # year carries forward the most recent prior rate; when the schedule is None
+    # the fixed ratio below (``resid_taxable_ratio`` /
+    # ``lot_inventory_taxable_ratio``) is used.  Utah's 45% exemption has been
+    # stable since 1995, so these are normally left unset — they exist so a
+    # change in the exemption can be phased in without touching the engine.
+    residential_assessment_schedule: Optional[dict[int, float]] = None
+    lot_inventory_taxable_schedule: Optional[dict[int, float]] = None
+    # Editable builder-inventory rate table, read back from the "Utah Property
+    # Tax Reference" tab and keyed by ROLL / TAX year (carry-forward).  When
+    # present it overrides the built-in BUILDER_INVENTORY_HISTORY defaults.
+    lot_inventory_rate_schedule: Optional[dict[int, float]] = None
+
+    # Home-sales pacing stress: fraction of the forecast absorption pace applied
+    # to the development (1.0 = base; 0.5 = sell at 50% of pace, stretching
+    # build-out and the assessed-value creation).  Read from the inputs page.
+    absorption_pace_factor: float = 1.0
+
+    # ── Tax / valuation mechanics (Utah-specific) ────────────────────────────
+    first_year: int = 2022              # FIRST_YEAR (first "Summary" year)
+    inflation_start_year: int = 2025    # INFLATION_START_YEAR (home-price inflation
+                                        # begins this year; flat before, never deflated)
+    inflation_rate: float = 0.03        # INFLATION_RATE (home price appreciation)
+    inflation_rate_comm_sales: float = 0.01  # INFLATION_RATE_COMM_SALES
+    # Utah counties revalue ANNUALLY, so this growth is applied every year
+    # rather than on Colorado's two-year cycle.
+    reassess_rate: float = 0.01          # REASSESS_RATE (residential)
+    reassess_comm_rate: float = 0.02     # REASSESS_COMM_RATE
+    # "Annual" (Utah, § 59-2-303.1) or "Biennial" (the Colorado cadence).
+    reassess_frequency: str = "Annual"   # REASSESS_FREQUENCY
+
+    # Primary residential exemption: taxable value is 55% of fair market value
+    # (Utah Const. art. XIII, § 3; § 59-2-103).
+    resid_taxable_ratio: float = 0.55         # RESID_TAXABLE_RATIO
+    # Prior-period ratio, retained so a change in the exemption can be modeled;
+    # unlike Colorado it does not adjust the mill levy.
+    resid_taxable_ratio_prior: float = 0.55   # RESID_TAXABLE_RATIO_PRIOR
+    tax_collect_mill_prc: float = 0.98  # TAX_COLLECT_MILL_PRC
+    # Personal property uniform fee (§ 59-2-405) as a % of mill-levy revenue.
+    uniform_fee_prc: float = 0.0        # UNIFORM_FEE_PRC
+    uniform_fee_av_threshold: float = 0  # UNIFORM_FEE_AV_THRESHOLD
+
+    # ── Mill levies ──────────────────────────────────────────────────────────
+    # Rate per $1,000 of taxable value.  0.003 per dollar = 3.000 mills.
+    mill_levy_governing_doc: float = 5.0  # MILL_LEVY_GOVERNING_DOC (governing document cap)
+    mill_levy_indenture: Optional[float] = 3.0  # MILL_LEVY_INDENTURE (indenture cap)
+    mill_levy_ds_target: float = 3.0    # MILL_LEVY_DS_TARGET
+    mill_levy_comm: Optional[float] = None  # MILL_LEVY_COMM (None ⇒ same as DS mill)
+    mill_levy_ops_target: float = 0     # MILL_LEVY_OPS_TARGET
+
+    # ── Lot / home valuation ratios ──────────────────────────────────────────
+    # Builder lot inventory.  Utah Admin. Code R884-24P-52 lets the residential
+    # exemption reach unoccupied property (and property under construction) the
+    # assessor determines will be a primary residence once occupied, so finished
+    # lots are carried at the same 55%.  Set to 1.00 to tax inventory at full
+    # fair market value instead (the conservative reading).
+    lot_inventory_taxable_ratio: float = 0.55   # LOT_INVENTORY_TAXABLE_RATIO
+    platted_lot_value: float = 0.10     # PLATTED_LOT_VALUE
+    platted_comm_lot_value: float = 0.10  # PLATTED_COMM_LOT_VALUE
+
+    # ── Other taxable AV components (Excel template) ─────────────────────────
+    state_assessed: float = 0           # STATE_ASSESSED (assessed value, added as-is)
+
+    # Oil & gas producing property: actual value assessed at OIL_GAS_VALUE
+    # (statutory 87.5%); equipment/other assessed at the developed-lot ratio.
+    centrally_assessed_value: float = 0           # OIL_GAS_ASSETS — actual value of producing property
+    centrally_assessed_equipment: float = 0        # equipment / other (actual value)
+    centrally_assessed_ratio: float = 0.875        # OIL_GAS_VALUE — oil & gas assessment ratio
+    centrally_assessed: str = "No"                 # OIL_GAS — include oil & gas in the taxed AV?
+
+    # Commercial property: market value (from the commercial development schedule)
+    # assessed at COMMERCIAL_ASSESSMENT_RATIO and taxed at the commercial mill
+    # levy (MILL_LEVY_COMM, often 0 or a separate cap).
+    commercial_assessment_ratio: float = 0.29   # commercial assessment ratio
+    comm_assessment_lag_years: int = 2          # market-value-to-collection lag
+    capital_improv_fee: float = 0       # CAPITAL_IMPROV_FEE
+    # Annual district administration — accounting, audit, legal, assessor and
+    # continuing-disclosure filings — charged against pledged revenue.  Colorado
+    # books this as the O&M carveout against a separate operations levy; a Utah
+    # PID typically has no operations levy, so the cost lands here.
+    admin_cost: float = 53_060         # ADMIN_COST (base year)
+    admin_cost_av_limit: float = 0     # ADMIN_COST_AV_LIMIT
+    admin_growth_rate: float = 0.02    # ADMIN_GROWTH_RATE (inflates the base)
+    # First collection year that carries district costs — administration and the
+    # trustee fees.  None ⇒ two years after closing: the first roll set with the
+    # bonds outstanding is billed that November, so year 2 is the first with a
+    # full year of collections to charge against.
+    district_cost_start_year: Optional[int] = None   # DISTRICT_COST_START_YEAR
+    resid_new_value_add: str = "Yes"    # RESID_NEW_VALUE_ADD (senior)
+    comm_new_value_add: str = "No"      # COMM_NEW_VALUE_ADD (senior)
+
+    # ── Assessment-rate lookups (support SB 24-233 time-varying rates) ───────
+    def residential_assessment_rate(self, collection_year: int) -> float:
+        """Residential assessment ratio for a collection year."""
+        return _schedule_lookup(
+            self.residential_assessment_schedule, collection_year, self.resid_taxable_ratio)
+
+    def lot_inventory_ratio(self, roll_year: int) -> float:
+        """
+        Vacant-land / nonresidential assessment ratio for a ROLL / tax year.
+
+        Precedence: the editable ``lot_inventory_rate_schedule`` (read back from the
+        "Historical TABOR Rates" tab, carry-forward) overrides the built-in
+        ``BUILDER_INVENTORY_HISTORY`` defaults, so a user can retune the SB24-233
+        phase-down in Excel without touching code.
+        """
+        if self.lot_inventory_rate_schedule:
+            return _schedule_lookup(
+                self.lot_inventory_rate_schedule, roll_year, self.lot_inventory_taxable_ratio)
+        return lot_inventory_ratio(roll_year)
+
+    def lot_inventory_taxable_rate(self, collection_year: int) -> float:
+        """
+        Vacant-land assessment ratio for a collection year.
+
+        An explicit ``lot_inventory_taxable_schedule`` (collection-year keyed)
+        wins.  Otherwise the vacant-land rate table is applied, indexed by the ROLL
+        year (= collection year − 1): the rate on a roll collected in year C is the
+        rate legislated for roll year C−1 (e.g. the 2025 roll, 27%, is collected in
+        2026).  This lets the SB24-233 phase-down (29% → 25%) flow into the
+        vacant-lot assessed value.
+        """
+        if self.lot_inventory_taxable_schedule:
+            return _schedule_lookup(
+                self.lot_inventory_taxable_schedule, collection_year, self.lot_inventory_taxable_ratio)
+        return self.lot_inventory_ratio(collection_year - 1)
+
+    def district_costs(self, collection_year: int) -> tuple[float, float, float]:
+        """
+        (administration, senior trustee fee, subordinate trustee fee) charged
+        against pledged revenue in ``collection_year``.
+
+        Nothing is charged before ``district_cost_start_year``; from then on the
+        administration base inflates at ``admin_growth_rate`` and the trustee
+        fees are flat.
+        """
+        start = self.district_cost_start_year or (self.delivery.year + 2)
+        if collection_year < start:
+            return 0.0, 0.0, 0.0
+        admin = self.admin_cost * (1 + self.admin_growth_rate) ** (collection_year - start)
+        return admin, self.trustee_fee, self.trustee_fee_sub
+
+    @property
+    def mill_levy_cap(self) -> float:
+        """
+        The controlling levy cap, in mills — the most restrictive of the three
+        that bind a Utah PID:
+
+          1. **Statute** — § 17D-4-303 caps the levy for all purposes at 0.015
+             per dollar of taxable value (15.000 mills).  It does not bind a levy
+             to pay principal of and interest on a voted general obligation bond.
+          2. **Governing document** — the rate fixed when the district was
+             created.
+          3. **Indentures** — the rate the district covenants to levy for the
+             bonds, usually the tightest of the three.
+
+        Unlike a Colorado service-plan cap this is a fixed rate per dollar of
+        taxable value: it does not float with the residential exemption, so
+        there is no gallagherization step.
+        """
+        caps = [PID_STATUTORY_LEVY_CAP * 1000.0, self.mill_levy_governing_doc]
+        if self.mill_levy_indenture is not None:
+            caps.append(self.mill_levy_indenture)
+        return min(c for c in caps if c and c > 0)
+
+    @property
+    def effective_ds_mill_levy(self) -> float:
+        """
+        Debt-service mill levy actually applied to taxable value — the target
+        rate, held down to the controlling cap.
+        """
+        return min(self.mill_levy_ds_target, self.mill_levy_cap)
+
+    @property
+    def commercial_mill_levy(self) -> float:
+        """
+        Commercial debt-service mill levy.  Defaults to the DS mill levy when not
+        separately set, so the two start equal; override ``mill_levy_comm`` to
+        tax commercial at a different rate.
+        """
+        return self.mill_levy_comm if self.mill_levy_comm is not None else self.effective_ds_mill_levy
+
+    # ── Statutory checks ─────────────────────────────────────────────────────
+    def validate(self) -> list[str]:
+        """Statutory / structural warnings for this configuration (empty is good)."""
+        out: list[str] = []
+        statutory = PID_STATUTORY_LEVY_CAP * 1000.0
+        total = self.mill_levy_ds_target + self.mill_levy_ops_target
+        if total > statutory + 1e-9:
+            out.append(
+                f"Total district levy of {total:.3f} mills exceeds the "
+                f"§ 17D-4-303 cap of {statutory:.3f} mills (0.015 per dollar of "
+                f"taxable value).")
+        if self.mill_levy_ds_target > self.mill_levy_cap + 1e-9:
+            out.append(
+                f"Debt service levy of {self.mill_levy_ds_target:.3f} mills exceeds "
+                f"the controlling cap of {self.mill_levy_cap:.3f} mills; the model "
+                f"levies the cap.")
+        if not 0 < self.resid_taxable_ratio <= 1:
+            out.append("Residential taxable ratio must be between 0 and 1 "
+                       "(Utah taxes 55% of fair market value, not ~6.7%).")
+        if self.lot_inventory_taxable_ratio > 1:
+            out.append("Builder lot inventory cannot be taxed above 100% of fair "
+                       "market value.")
+        if self.reassess_frequency.strip().lower() not in ("annual", "biennial"):
+            out.append('Reassessment frequency must be "Annual" or "Biennial".')
+        return out
+
+    @property
+    def centrally_assessed_av(self) -> float:
+        """
+        Assessed value of oil & gas producing property (Excel column AD):
+        actual value x OIL_GAS_VALUE + equipment x developed-lot ratio.
+        Zero unless ``centrally_assessed == 'Yes'``.
+        """
+        if self.centrally_assessed != "Yes":
+            return 0.0
+        return (self.centrally_assessed_value * self.centrally_assessed_ratio
+                + self.centrally_assessed_equipment * self.lot_inventory_taxable_ratio)
+
+    def av_source_year(self, collection_year: int) -> int:
+        """
+        Year of cumulative market value backing a collection year's assessed
+        value, applying the lag and (optionally) the strict biennial hold.
+        """
+        if self.hold_value_flat:
+            # Optional Colorado-style two-year hold; off for Utah, which
+            # revalues annually.
+            if self.reassess_on_even_years:
+                anchor = collection_year if collection_year % 2 == 0 else collection_year - 1
+            else:
+                anchor = collection_year if collection_year % 2 == 1 else collection_year - 1
+            return anchor - self.av_lag_years
+        return collection_year - self.av_lag_years
+
+    # ── Derived helpers ──────────────────────────────────────────────────────
+    @property
+    def delivery_year(self) -> int:
+        return self.delivery.year
+
+    def _snap_to_payment_date(self, d: date) -> date:
+        """
+        Snap a date back to the most recent principal payment date.
+
+        Colorado delivers on 1 December and pays principal on 1 December, so
+        this is a no-op there.  Utah delivers when the market allows and pays on
+        1 March, so call dates and the capitalized-interest end date have to land
+        on a payment date rather than an anniversary of closing.
+        """
+        candidate = date(d.year, self.prin_maturity, self.prin_maturity_day_senior)
+        if candidate > d:
+            candidate = date(d.year - 1, self.prin_maturity,
+                             self.prin_maturity_day_senior)
+        return candidate
+
+    @property
+    def capi_end_date(self) -> date:
+        """CAPI_END_DATE — last capitalized-interest payment date."""
+        return self._snap_to_payment_date(_edate(self.delivery, self.capi_term))
+
+    @property
+    def premium_call_date(self) -> date:
+        """PREMIUM_CALL_FIRST — first optional redemption at a premium price.
+
+        The call-protection period (``premium_call_years``, e.g. 5 years) runs
+        from the delivery date entered on the Inputs tab, so changing the
+        delivery date moves the first call date with it.  The date is snapped to
+        a principal payment date — bonds are redeemed on a payment date, not on
+        an anniversary of closing."""
+        return self._snap_to_payment_date(
+            _edate(self.delivery, 12 * self.premium_call_years))
+
+    @property
+    def call_premium_step_years(self) -> int:
+        """Years for the redemption premium to step down 1.00%/yr to par."""
+        import math
+        return max(0, math.ceil(self.premium_call_price - 100.0))
+
+    @property
+    def par_call_date(self) -> date:
+        """First optional redemption at par — derived: the premium steps down
+        1.00%/yr from the first call, reaching par after that many years."""
+        return _edate(self.premium_call_date, 12 * self.call_premium_step_years)
+
+    @property
+    def first_collection_year(self) -> int:
+        """First year assessed value is collected (drives surplus/sub schedules)."""
+        return self.first_year + 2
+
+    @property
+    def senior_first_principal_year(self) -> int:
+        """First senior principal-payment year — the December after delivery
+        (capitalized-interest years carry zero principal, handled in sizing)."""
+        return self.delivery.year + 1
+
+    @property
+    def senior_final_year(self) -> int:
+        """Senior final maturity year = first-interest year + the maturity term
+        (matches the surplus-fund release date)."""
+        return self.delivery.year + 1 + self.final_mat_yrs
+
+    @property
+    def delivery_refunding(self) -> date:
+        """DELIVERY_REFUNDING — refunding bonds are delivered at the premium-call date."""
+        return self.premium_call_date
+
+    @property
+    def senior_rate_effective(self) -> float:
+        return self.senior_interest_rate
 
 
-# ── Statutory constants (Utah) ────────────────────────────────────────────────
+def _schedule_lookup(schedule: Optional[dict[int, float]], year: int,
+                     default: float) -> float:
+    """
+    Return the scheduled rate for ``year``; if the year is missing, carry forward
+    the most recent prior scheduled rate; if the schedule is empty/None, use the
+    fixed ``default`` ratio.
+    """
+    if not schedule:
+        return default
+    if year in schedule:
+        return schedule[year]
+    prior = [y for y in schedule if y <= year]
+    if prior:
+        return schedule[max(prior)]
+    return schedule[min(schedule)]
 
-#: UCA 17D-4-303 — a PID's levy for all purposes may not exceed this rate per
-#: dollar of taxable value.  Does not bind a levy for voted GO bonds.
-PID_STATUTORY_LEVY_CAP = 0.015          # 15.000 mills
 
-#: UCA 59-2-103 — primary residential property is taxed on 55% of fair market
-#: value (a 45% exemption), for up to one acre of land per residential unit.
+def _edate(d: date, months: int) -> date:
+    """Excel EDATE — shift a date by a whole number of months (clamped day)."""
+    m = d.month - 1 + months
+    y = d.year + m // 12
+    m = m % 12 + 1
+    import calendar
+    day = min(d.day, calendar.monthrange(y, m)[1])
+    return date(y, m, day)
+
+
+# ── Utah statutory constants ─────────────────────────────────────────────────
+
+#: § 17D-4-303 — a public infrastructure district's property tax levy, for all
+#: purposes including debt service on limited tax bonds, may not exceed this rate
+#: per dollar of taxable value.  It does not bind a levy to pay principal of and
+#: interest on a voted general obligation bond the district issues.
+PID_STATUTORY_LEVY_CAP = 0.015          # = 15.000 mills
+
+#: Utah Const. art. XIII, § 3 / § 59-2-103 — the primary residential exemption.
 RESIDENTIAL_EXEMPTION = 0.45
 DEFAULT_RESID_TAXABLE_RATIO = 1.0 - RESIDENTIAL_EXEMPTION   # 0.55
 
 
-@dataclass
-class ModelConfig:
-    """Central parameter store.  Override any field to run a what-if."""
+# ── Utah primary residential exemption history ───────────────────────────────
+# Taxable share of fair market value for primary residential property, by tax
+# year.  Utah voters added the exemption to the constitution in 1982 at 25% and
+# the legislature stepped it up to the constitutional maximum of 45% effective
+# 1 January 1995, where it has stayed.  Powers the "Utah Property Tax Reference"
+# sheet and lets a certified taxable value be grossed up to market value
+# (taxable ÷ ratio) for the year it was certified.
+RESIDENTIAL_EXEMPTION_HISTORY = [
+    ("1982–1984", 0.7500, "Exemption added by constitutional amendment at 25%"),
+    ("1985–1994", 0.6800, "Stepped up in increments toward the 45% maximum"),
+    ("1995 +",    0.5500, "45% exemption — the constitutional maximum "
+                          "(art. XIII, § 3; § 59-2-103)"),
+]
 
-    # ── Basic inputs (rows 6-17) ──────────────────────────────────────────────
-    district_name: str = "Viridian Farm Public Infrastructure District No. 1"
-    city: str = "Salem"
-    county: str = "Utah"
-    developer: str = "D.R. Horton"
-    scenario_label: str = ""
-    second_financing: str = "No"
-    refund_financing: str = "No"
 
-    # ── Fees (rows 19-26) ─────────────────────────────────────────────────────
-    coi: float = 400_000.0
-    coi_refunding: float = 200_000.0
-    uwd_senior: float = 0.010
-    uwd_sub: float = 0.015
-    uwd_senior_refunding: float = 0.005
-    #: Utah counties recover assessing/collecting through a separate statewide
-    #: levy on property (UCA 59-2-1602), not a haircut on the district's
-    #: distribution, so this is 0.00 for Utah where Colorado runs ~1.50%.
-    county_treasurer_fee: float = 0.0
-    trustee_fee: float = 4_000.0
-    trustee_fee_sub: float = 3_000.0
+def _rate_year_bounds(label: str) -> tuple[int, int]:
+    """(low, high) tax-year bounds for a history label ('1985–1994', '1995 +')."""
+    open_ended = "+" in label
+    s = label.replace("+", "").strip()
+    for dash in ("–", "—", "-"):
+        if dash in s:
+            lo, hi = s.split(dash)
+            return int(lo.strip()), int(hi.strip())
+    y = int(s)
+    return (y, 9999) if open_ended else (y, y)
 
-    # ── Structuring assumptions (rows 30-69) ──────────────────────────────────
-    delivery: date = date(2024, 9, 26)
-    capi: str = "Yes"
-    capi_term_months: int = 36
-    surplus_on_off: str = "Yes"
-    surplus_release_sizing: str = "Yes"
-    surplus_target_multiple: float = 0.0      # × MADS held in the surplus fund
-    sub_sizing_threshold: float = 10_000.0
-    #: Force a subordinate par (e.g. a round $1,000,000) instead of letting the
-    #: model size the largest amount the residual cashflow retires in full.
-    sub_par_override: Optional[float] = None
-    premium_call_years: int = 5
-    premium_call_price: float = 103.0
-    par_call_years: int = 7
-    final_mat_yrs: int = 29
-    final_mat_sub_yrs: int = 30
-    final_mat_yrs_refunding: int = 30
-    #: Utah PID debt service is structured around a 30 November tax due date, so
-    #: principal falls on 1 March (Colorado's Feb/June collections → 1 December).
-    prin_maturity: int = 3
-    prin_maturity_day_senior: int = 1
-    prin_maturity_day_sub: int = 15
-    ig_rated: str = "No"
-    senior_rate_ig: float = 0.05000
-    senior_rate_nr: float = 0.05875
-    sub_rate_ig: float = 0.07000
-    sub_rate_nr: float = 0.08125
-    senior_refunding_interest_rate: float = 0.045
-    dsc_senior_lien_bonds: float = 1.30
-    dsc_sub_lien_bonds: float = 1.00
-    dsc_refunding_bonds: float = 1.20
 
-    # ── Projection assumptions (rows 71-106) ──────────────────────────────────
-    first_year: int = 2023
-    resid_delivery_year: date = date(2024, 1, 1)
-    inflation_rate: float = 0.03
-    inflation_rate_comm_sales: float = 0.01
-    inflation_step_years: int = 1
-    inflation_step_start_year: date = date(2021, 12, 1)
-    #: Utah county assessors revalue annually (UCA 59-2-303.1), so the default
-    #: reassessment cadence is "Annual".  Set to "Biennial" to mirror Colorado.
-    reassess_frequency: str = "Annual"
-    reassess_rate_resid: float = 0.01
-    reassess_rate_resid_sub: float = 0.01
-    reassess_rate_comm: float = 0.02
-    #: Utah primary residential exemption.  `resid_taxable_ratio_prior` exists
-    #: only so the Colorado "gallagherization" arithmetic stays available; with
-    #: `gallagherization = "No"` (the Utah default) it is inert.
-    resid_taxable_ratio_prior: float = 0.55
-    resid_taxable_ratio: float = DEFAULT_RESID_TAXABLE_RATIO
-    tax_collect_mill_prc: float = 0.98
-    #: Personal-property uniform fee (UCA 59-2-405) allocated to the district in
-    #: the same proportion as real property tax.  Viridian excluded it — 0.00.
-    uniform_fee_prc: float = 0.0
-    uniform_fee_av_threshold: float = 0.0
-    interest_earn_rate: float = 0.025
-    gallagherization: str = "No"
-    #: Rate per $1,000 of taxable value.  0.003/dollar = 3.000 mills.
-    mill_levy_governing_doc: float = 3.0
-    mill_levy_comm: float = 0.0
-    mill_levy_ops_target: float = 0.0
-    mill_levy_cap_total: float = 0.0
-    contribution_rate: float = 0.0
-    #: Annual district administration (accounting, audit, legal, assessor
-    #: filings), inflated at `admin_cost_growth`.  Colorado books this as the
-    #: "O&M carveout"; a Utah PID has no separate operations levy, so the cost
-    #: is charged against pledged revenue instead.
-    admin_cost_base: float = 53_060.0
-    admin_cost_av_limit: float = 0.0
-    admin_cost_growth: float = 0.02
-    #: First assessment year that carries district costs (admin + trustee).
-    #: Defaults to two years after closing: the first tax roll set after the
-    #: bonds are outstanding is billed the following November, so year 2 is the
-    #: first one with a full year of collections to charge against.
-    district_cost_start_year: Optional[int] = None
-    #: System Development Fee ("SDF") per residential unit, if any.
-    system_development_fee: float = 0.0
-    state_assessed: float = 0.0
-    centrally_assessed_value: float = 0.0
-    resid_new_value_add: Optional[str] = None      # defaults from `ig_rated`
-    resid_new_value_add_sub: str = "Yes"
-    comm_new_value_add: str = "No"
-    comm_new_value_add_sub: str = "No"
-    centrally_assessed_senior: str = "No"
-    centrally_assessed_sub: str = "Yes"
+def residential_taxable_ratio_for(year: int) -> float:
+    """Primary residential taxable ratio in effect for ``year``."""
+    fallback = (RESIDENTIAL_EXEMPTION_HISTORY[-1][1]
+                if RESIDENTIAL_EXEMPTION_HISTORY else DEFAULT_RESID_TAXABLE_RATIO)
+    for label, ratio, _ in RESIDENTIAL_EXEMPTION_HISTORY:
+        lo, hi = _rate_year_bounds(label)
+        if lo <= year <= hi:
+            return ratio
+    return fallback
 
-    # ── Developer assumptions (rows 113-136) ──────────────────────────────────
-    asp: list[float] = field(default_factory=lambda: [
-        365_620.0, 394_910.0, 434_350.0, 492_150.0,
-        563_750.0, 635_500.0, 709_813.0, 761_063.0,
-        0.0, 0.0, 0.0, 0.0,
-    ])
-    product_labels: list[str] = field(default_factory=lambda: [
-        "Rear-Load Townhome", "Front-Load Townhome", "Alley-Load Cottages",
-        "Front-Load Cottages", "8,000 Lots", "12,000 Lots",
-        "18,000 Lots", "21,000 Lots", "", "", "", "",
-    ])
-    hypothetical_scenario: str = "No"
-    lot_delivery_scenario: float = 1.0
-    absorption_scenario: float = 1.0
-    home_first_close_months: int = 6               # after delivery
-    commercial_lag_years: int = 1
-    home_lot_delivery_lead_months: int = 6         # before first closing
-    platted_comm_lot_value: float = 0.10
-    #: Finished-lot market value as a share of the eventual home ASP.
-    platted_lot_value: float = 0.10
-    #: Taxable-value ratio applied to developer lot inventory.  Utah allows the
-    #: residential exemption on unoccupied property the assessor determines will
-    #: become a primary residence (Utah Admin. Code R884-24P-52), so this is the
-    #: 55% residential ratio.  Colorado uses its 29% vacant-land rate.
-    developed_lot_value: float = DEFAULT_RESID_TAXABLE_RATIO
-    centrally_assessed_ratio: float = 0.875
 
-    # ── Value-lag convention ──────────────────────────────────────────────────
-    #: Years between value creation and the tax roll it first appears on.
-    #: Utah assesses on 1 January and bills the same year (due 30 November), so
-    #: one year.  Colorado's biennial cycle effectively runs two.
-    value_lag_years: int = 1
+# ── Builder lot inventory taxable ratio ──────────────────────────────────────
+# Utah has no separate vacant-land assessment class: non-exempt property is
+# taxed on 100% of fair market value.  What matters for a residential PID is
+# whether finished lots and homes under construction, still owned by the
+# builder, carry the primary residential exemption.  Utah Admin. Code
+# R884-24P-52 says they can: on a written declaration, or where the assessor
+# determines the property will qualify as a primary residence once occupied,
+# the exemption applies while the property is unoccupied.  The default below
+# follows that treatment (55%).  Enter 1.0000 for a roll year in the "Utah
+# Property Tax Reference" tab to tax inventory at full market value instead.
+#
+# Keyed by ASSESSMENT ROLL / TAX YEAR.
+BUILDER_INVENTORY_HISTORY = [
+    ("1995 +", 0.5500, "Residential exemption applied to unoccupied builder "
+                       "inventory (Utah Admin. Code R884-24P-52)"),
+]
 
-    # ── Derived structuring dates ─────────────────────────────────────────────
 
-    def __post_init__(self) -> None:
-        if self.resid_new_value_add is None:
-            self.resid_new_value_add = "No" if self.ig_rated == "Yes" else "Yes"
-        if self.district_cost_start_year is None:
-            self.district_cost_start_year = self.delivery.year + 2
+def lot_inventory_ratio(year: int) -> float:
+    """Builder lot inventory taxable ratio for a roll/tax ``year``."""
+    fallback = (BUILDER_INVENTORY_HISTORY[-1][1]
+                if BUILDER_INVENTORY_HISTORY else DEFAULT_RESID_TAXABLE_RATIO)
+    for label, ratio, _ in BUILDER_INVENTORY_HISTORY:
+        lo, hi = _rate_year_bounds(label)
+        if lo <= year <= hi:
+            return ratio
+    return fallback
 
-    @property
-    def int_maturity(self) -> int:
-        """Interest-only month, six months off the principal month."""
-        return self.prin_maturity - 6 if self.prin_maturity > 6 else self.prin_maturity + 6
 
-    @property
-    def senior_interest_rate(self) -> float:
-        return self.senior_rate_ig if self.ig_rated == "Yes" else self.senior_rate_nr
-
-    @property
-    def sub_interest_rate(self) -> float:
-        return self.sub_rate_ig if self.ig_rated == "Yes" else self.sub_rate_nr
-
-    @property
-    def first_int(self) -> date:
-        """First senior interest date — the earlier coupon date after delivery."""
-        d = self.delivery
-        prin = date(d.year, self.prin_maturity, self.prin_maturity_day_senior)
-        intr = date(d.year, self.int_maturity, self.prin_maturity_day_senior)
-        if min(prin, intr) > d:
-            nxt = edate(d, 6)
-            return min(date(nxt.year, self.prin_maturity, self.prin_maturity_day_senior),
-                       date(nxt.year, self.int_maturity, self.prin_maturity_day_senior))
-        return max(prin, intr) if max(prin, intr) > d else edate(min(prin, intr), 12)
-
-    @property
-    def first_int_sub(self) -> date:
-        d = self.delivery
-        prin = date(d.year, self.prin_maturity, self.prin_maturity_day_sub)
-        intr = date(d.year, self.int_maturity, self.prin_maturity_day_sub)
-        if min(prin, intr) > d:
-            nxt = edate(d, 6)
-            return min(date(nxt.year, self.prin_maturity, self.prin_maturity_day_sub),
-                       date(nxt.year, self.int_maturity, self.prin_maturity_day_sub))
-        return max(prin, intr) if max(prin, intr) > d else edate(min(prin, intr), 12)
-
-    @property
-    def premium_call_first(self) -> date:
-        d = self.delivery
-        base = min(date(d.year, self.prin_maturity, self.prin_maturity_day_senior),
-                   date(d.year, self.int_maturity, self.prin_maturity_day_senior))
-        return edate(base, self.premium_call_years * 12)
-
-    @property
-    def par_call_first(self) -> date:
-        d = self.delivery
-        base = min(date(d.year, self.prin_maturity, self.prin_maturity_day_senior),
-                   date(d.year, self.int_maturity, self.prin_maturity_day_senior))
-        return edate(base, self.par_call_years * 12)
-
-    @property
-    def delivery_refunding(self) -> date:
-        return self.premium_call_first
-
-    @property
-    def first_int_refunding(self) -> date:
-        d = self.delivery_refunding
-        prin = date(d.year, self.prin_maturity, self.prin_maturity_day_senior)
-        intr = date(d.year, self.int_maturity, self.prin_maturity_day_senior)
-        if min(prin, intr) <= d:
-            nxt = edate(d, 6)
-            return min(date(nxt.year, self.prin_maturity, self.prin_maturity_day_senior),
-                       date(nxt.year, self.int_maturity, self.prin_maturity_day_senior))
-        return min(prin, intr)
-
-    @property
-    def capi_first_draw(self) -> date:
-        return self.first_int
-
-    @property
-    def capi_end_date(self) -> date:
-        e = edate(self.delivery, self.capi_term_months)
-        return date(e.year, min(self.prin_maturity, e.month), self.prin_maturity_day_senior)
-
-    @property
-    def surplus_fund_release_date(self) -> date:
-        a = edate(date(self.delivery.year, self.prin_maturity,
-                       self.prin_maturity_day_senior), 12 * self.final_mat_yrs)
-        b = edate(date(self.first_int.year, self.prin_maturity,
-                       self.prin_maturity_day_senior), 12 * self.final_mat_yrs)
-        return max(a, b)
-
-    @property
-    def surplus_fund_release_date_refunding(self) -> date:
-        a = edate(date(self.delivery_refunding.year, self.prin_maturity,
-                       self.prin_maturity_day_senior), 12 * self.final_mat_yrs_refunding)
-        b = edate(date(self.first_int.year, self.prin_maturity,
-                       self.prin_maturity_day_senior), 12 * self.final_mat_yrs_refunding)
-        return max(a, b)
-
-    @property
-    def end_bal_accrued_sub_bonds(self) -> date:
-        return edate(date(self.delivery.year, self.prin_maturity,
-                          self.prin_maturity_day_sub), 12 * self.final_mat_sub_yrs)
-
-    @property
-    def home_first_close_date(self) -> date:
-        return edate(self.delivery, self.home_first_close_months)
-
-    @property
-    def home_lot_delivery_date(self) -> date:
-        return edate(self.home_first_close_date, -self.home_lot_delivery_lead_months)
-
-    @property
-    def mill_levy_ds_cap(self) -> float:
-        if self.gallagherization == "Yes" and self.resid_taxable_ratio:
-            return self.mill_levy_governing_doc / (
-                self.resid_taxable_ratio / self.resid_taxable_ratio_prior)
-        return self.mill_levy_governing_doc
-
-    @property
-    def mill_levy_ds_target(self) -> float:
-        return self.mill_levy_ds_cap
-
-    @property
-    def analysis(self) -> str:
-        return (f"Development Projections at {self.mill_levy_ds_target:.3f} "
-                f"Mills for Debt Service")
-
-    @property
-    def senior_bonds_series(self) -> str:
-        return f"Series {self.delivery.year}A"
-
-    @property
-    def sub_bonds_series(self) -> str:
-        return f"Series {self.delivery.year}B"
-
-    @property
-    def refund_bonds_series(self) -> str:
-        return f"Series {self.premium_call_first.year}"
-
-    @property
-    def frac(self) -> float:
-        from .xlfin import yearfrac
-        return yearfrac(self.delivery, self.first_int)
-
-    @property
-    def frac_sub(self) -> float:
-        from .xlfin import yearfrac
-        return yearfrac(self.delivery, self.first_int_sub)
-
-    def validate(self) -> list[str]:
-        """Return a list of statutory / structural warnings (empty is good)."""
-        warnings: list[str] = []
-        total_levy = (self.mill_levy_ds_target + self.mill_levy_ops_target
-                      + self.contribution_rate)
-        statutory_mills = PID_STATUTORY_LEVY_CAP * 1000.0
-        if total_levy > statutory_mills:
-            warnings.append(
-                f"Total district levy of {total_levy:.3f} mills exceeds the "
-                f"UCA 17D-4-303 cap of {statutory_mills:.3f} mills "
-                f"(0.015 per dollar of taxable value).")
-        if self.mill_levy_cap_total and total_levy > self.mill_levy_cap_total:
-            warnings.append(
-                f"Total district levy of {total_levy:.3f} mills exceeds the "
-                f"governing-document cap of {self.mill_levy_cap_total:.3f} mills.")
-        if self.gallagherization == "Yes":
-            warnings.append(
-                "Gallagherization is a Colorado mechanism; Utah levy caps are "
-                "stated as a fixed rate per dollar of taxable value and are not "
-                "adjusted for changes in the residential exemption.")
-        if not 0 < self.resid_taxable_ratio <= 1:
-            warnings.append("Residential taxable ratio must be between 0 and 1.")
-        return warnings
+# ── Utah property tax calendar (reference) ───────────────────────────────────
+# Drives the reference sheet in the inputs workbook and the memo prose.  Dates
+# are from Utah Code title 59, chapter 2, part 3 and part 13.
+UTAH_TAX_CALENDAR = [
+    ("January 1", "Lien date — property is valued as of this date"),
+    ("May 1", "State Tax Commission assesses centrally assessed property"),
+    ("May 22", "County assessors complete locally assessed property"),
+    ("June 8", "Centrally assessed value apportioned to taxing entities"),
+    ("June 22", "Taxing entity adopts a proposed or final tax rate"),
+    ("July 22", "Valuation notices mailed; Truth in Taxation hearing noticed"),
+    ("November 1", "Corrected rolls delivered; tax notices mailed"),
+    ("November 30", "Taxes due — a single annual payment"),
+    ("December 31", "Delinquency; penalty of the greater of 2.5% or $10"),
+    ("January 1 (next)", "Interest runs at the federal funds target + 6%, "
+                         "floored at 7% and capped at 10%"),
+]

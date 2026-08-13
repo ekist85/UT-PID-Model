@@ -1,258 +1,419 @@
 """
-development.py — residential and commercial absorption schedules.
+development.py — Residential & Commercial Development sheets.
 
-Mirrors the "Residential Development" and "Comm Development" tabs.  Each tab is
-a set of side-by-side blocks over the same year axis; this module produces the
-same blocks as plain lists so the workbook writer can lay them out unchanged.
+Models the lot-delivery and home-closing absorption schedule provided by the
+developer, and derives the market-value drivers that feed the assessed-value
+engine (the "Summary" sheet):
 
-Residential blocks (Colorado column groups in brackets):
-    lot_delivery          [D:Q]    finished lots delivered, by product
-    lot_delivery_scenario [S:AF]   the above × LOT_DELIVERY_SCENARIO
-    lot_value             [AH:AU]  lots × vacant land value per lot
-    lot_value_lagged      [AW:BK]  lot_value shifted onto the tax roll
-    lots_consumed         [BM:CA]  lot value removed as homes close
-    home_closings         [CD:CQ]  closings, by product
-    closings_scenario     [CS:DF]  the above × ABSORPTION_SCENARIO
-    pricing               [DH:DU]  ASP inflated to the closing year
-    av_creation           [DW:EL]  closings × inflated ASP
-    av_creation_lagged    [EN:FC]  the above shifted onto the tax roll
+  * ``home_closings[year]``   — number of homes that close (sell) that year
+  * ``lot_market_value[year]``— market value of platted/developed lots placed
+  * ``asp(year)``             — average selling price, inflated annually
+  * ``cumulative_home_market_value[year]`` (Summary column M)
+  * ``new_home_market_value[year]``        (homes closed x ASP)
+
+Two input modes:
+
+  * **Aggregate** (default) — a single absorption stream via the dict fields
+    below (reproduces the Viridian Farm program: 716 residential units).
+  * **Per-product** — a list of ``ProductLine`` objects (one per builder ×
+    product, 1 to 8 lines, e.g. one builder/one product, or four builders with
+    two products each).  Each product carries its own lot deliveries, home
+    closings, lot value, and ASP; the aggregate drivers are rolled up from them.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
-from typing import Optional
 
-from .config import ModelConfig
 
-#: Rows 14-40 of the development tabs — 27 projection years.
-PROJECTION_YEARS = 27
+def _slow_schedule(schedule: dict[int, float], pace_factor: float) -> dict[int, float]:
+    """Scale annual absorption by pace_factor, rolling deferred units forward."""
+    if not schedule:
+        return {}
+    total = sum(schedule.values())
+    years = sorted(schedule)
+    avg_reduced = (total / len(years)) * pace_factor
+    seq = [(y, schedule[y] * pace_factor) for y in years]
+    placed = sum(v for _, v in seq)
+    y = years[-1]
+    while placed < total - 1e-6:
+        y += 1
+        amt = min(avg_reduced, total - placed)
+        seq.append((y, amt))
+        placed += amt
+    out: dict[int, float] = {}
+    for yr, v in seq:
+        out[yr] = out.get(yr, 0.0) + v
+    return out
 
 
 @dataclass
-class Product:
-    """One builder/product column on the Residential Development tab."""
+class ProductLine:
+    """
+    One builder × product absorption line (e.g. "Builder 1 — 40' Product").
+
+    A development may have a single product line or up to eight (e.g. four
+    builders with two products each).
+    """
     name: str
-    product_type: str = "SFD"           # SFD | TH | DU
-    total_units: int = 0
-    asp: float = 0.0
-    #: {calendar year: units}
-    lot_delivery: dict[int, int] = field(default_factory=dict)
-    home_closings: dict[int, int] = field(default_factory=dict)
+    # "Total Units" on the inputs page — the total planned residential units for
+    # this product (the build-out count / cap).  This is an informational total
+    # only; it is NOT pre-existing built value and does NOT seed the starting
+    # home market value.  Home value accrues over time from ``home_closings``.
+    existing_units: int = 0
+    lot_deliveries: dict[int, int] = field(default_factory=dict)   # units delivered by year
+    home_closings: dict[int, int] = field(default_factory=dict)    # units closed by year
+    asp_base: float = 515_000                                      # base average selling price
+    asp_base_year: int = 2024
 
-    def average_absorption(self) -> float:
-        """Workbook row 47: mean of the non-zero closing years, rounded."""
-        vals = [v for v in self.home_closings.values() if v > 0]
-        return round(sum(vals) / len(vals)) if vals else 0.0
+    def asp(self, year: int, inflation: float, inflation_start_year: int) -> float:
+        # Price is flat at the base until inflation starts, then compounds one year
+        # of inflation per year — the inflation start year is the FIRST inflated
+        # year (base × (1+i)^1).  Never deflated below the base.
+        n = max(0, year - inflation_start_year + 1)
+        return self.asp_base * (1.0 + inflation) ** n
 
-    def average_lot_delivery(self) -> float:
-        vals = [v for v in self.lot_delivery.values() if v > 0]
-        return round(sum(vals) / len(vals)) if vals else 0.0
+    def lot_value(self, year: int, inflation: float, platted_pct: float,
+                  inflation_start_year: int) -> float:
+        """Market value of a delivered lot = ASP × platted-lot value %."""
+        return self.asp(year, inflation, inflation_start_year) * platted_pct
 
-
-@dataclass
-class CommercialProduct:
-    """One column on the Comm Development tab (square footage rather than lots)."""
-    name: str
-    total_sf: float = 0.0
-    value_per_sf: float = 0.0
-    sf_delivered: dict[int, float] = field(default_factory=dict)
-    sf_sold: dict[int, float] = field(default_factory=dict)
-
-
-@dataclass
-class DevelopmentProjections:
-    """The full absorption picture for one district."""
-
-    start_year: int
-    products: list[Product] = field(default_factory=list)
-    commercial: list[CommercialProduct] = field(default_factory=list)
-    #: Value already on the roll at the start of the projection.
-    existing_home_market_value: float = 0.0
-    existing_lot_value: float = 0.0
-
-    # ── Year axis ─────────────────────────────────────────────────────────────
-
-    def years(self) -> list[int]:
-        return [self.start_year + i for i in range(PROJECTION_YEARS)]
-
-    def assessment_dates(self, cfg: ModelConfig) -> list[date]:
-        """Column C of the Summary tab: the 1 January valuation, carried on the
-        district's principal-payment month so every tab shares one axis."""
-        return [date(y, cfg.prin_maturity, 1) for y in self.years()]
-
-    # ── Residential blocks ────────────────────────────────────────────────────
-
-    def lot_delivery(self, cfg: ModelConfig) -> list[list[float]]:
-        return [[float(p.lot_delivery.get(y, 0) or 0) for p in self.products]
-                for y in self.years()]
-
-    def lot_delivery_scenario(self, cfg: ModelConfig) -> list[list[float]]:
-        return self._scenario(self.lot_delivery(cfg),
-                              [p.average_lot_delivery() for p in self.products],
-                              cfg.lot_delivery_scenario, cfg)
-
-    def home_closings(self, cfg: ModelConfig) -> list[list[float]]:
-        return [[float(p.home_closings.get(y, 0) or 0) for p in self.products]
-                for y in self.years()]
-
-    def closings_scenario(self, cfg: ModelConfig) -> list[list[float]]:
-        return self._scenario(self.home_closings(cfg),
-                              [p.average_absorption() for p in self.products],
-                              cfg.absorption_scenario, cfg)
-
-    def _scenario(self, base: list[list[float]], averages: list[float],
-                  factor: float, cfg: ModelConfig) -> list[list[float]]:
-        """
-        Workbook columns S:AF / CS:DF.  When HYPOTHETICAL_SCENARIO is "No" the
-        base schedule passes straight through; when it is "Yes" the schedule is
-        rebuilt at `average × factor` units per year, capped at total units.
-        """
-        if cfg.hypothetical_scenario != "Yes":
-            return [row[:] for row in base]
-
-        out: list[list[float]] = []
-        running = [0.0] * len(self.products)
-        for r, row in enumerate(base):
-            new_row: list[float] = []
-            for i, p in enumerate(self.products):
-                target = round(averages[i] * factor)
-                remaining = p.total_units - running[i]
-                if remaining >= p.total_units:          # nothing drawn yet
-                    val = 0.0 if row[i] <= 0 else target
-                else:
-                    val = min(remaining, target)
-                val = max(0.0, val)
-                running[i] += val
-                new_row.append(val)
-            out.append(new_row)
-        return out
-
-    def vacant_land_value_per_lot(self, cfg: ModelConfig) -> list[float]:
-        """Workbook row 11: finished-lot value as a share of the home ASP."""
-        return [p.asp * cfg.platted_lot_value for p in self.products]
-
-    def lot_value(self, cfg: ModelConfig) -> list[list[float]]:
-        per_lot = self.vacant_land_value_per_lot(cfg)
-        return [[units * per_lot[i] for i, units in enumerate(row)]
-                for row in self.lot_delivery_scenario(cfg)]
-
-    def lot_value_lagged(self, cfg: ModelConfig) -> list[list[float]]:
-        """Shift lot value onto the tax roll (Utah: one year; Colorado: two)."""
-        return _lag(self.lot_value(cfg), cfg.value_lag_years)
-
-    def lots_consumed(self, cfg: ModelConfig) -> list[list[float]]:
-        """
-        Lot value backed out of the roll once a home closes on it.  The workbook
-        negates the lagged lot value one row further on; economically the lot
-        stops being taxed as a lot when the improvement lands.
-        """
-        lagged = self.lot_value_lagged(cfg)
-        return [[-v for v in row] for row in _lag(lagged, 1)]
-
-    def pricing(self, cfg: ModelConfig) -> list[list[float]]:
-        """ASP inflated from the delivery year to each closing year (row DH:DU)."""
-        base_year = cfg.resid_delivery_year.year
-        out: list[list[float]] = []
-        for y in self.years():
-            steps = max(0, y - base_year)
-            out.append([max(p.asp, p.asp * (1 + cfg.inflation_rate) ** steps)
-                        if p.asp else 0.0 for p in self.products])
-        return out
-
-    def av_creation(self, cfg: ModelConfig) -> list[list[float]]:
-        """Market value created by home closings (block DW:EL)."""
-        prices = self.pricing(cfg)
-        closings = self.closings_scenario(cfg)
-        return [[closings[r][i] * prices[r][i] for i in range(len(self.products))]
-                for r in range(len(self.years()))]
-
-    def av_creation_lagged(self, cfg: ModelConfig) -> list[list[float]]:
-        """Block EN:FC — the Utah addition that puts new homes on the next roll."""
-        return _lag(self.av_creation(cfg), cfg.value_lag_years)
-
-    # ── Commercial blocks ─────────────────────────────────────────────────────
-
-    def comm_sf_delivered(self, cfg: ModelConfig) -> list[list[float]]:
-        return [[float(c.sf_delivered.get(y, 0) or 0) for c in self.commercial]
-                for y in self.years()]
-
-    def comm_sf_sold(self, cfg: ModelConfig) -> list[list[float]]:
-        return [[float(c.sf_sold.get(y, 0) or 0) for c in self.commercial]
-                for y in self.years()]
-
-    def comm_value_created(self, cfg: ModelConfig) -> list[list[float]]:
-        sold = self.comm_sf_sold(cfg)
-        return [[sold[r][i] * c.value_per_sf for i, c in enumerate(self.commercial)]
-                for r in range(len(self.years()))]
-
-    # ── Roll-ups used by the Summary tab ──────────────────────────────────────
-
+    @property
     def total_units(self) -> int:
-        return sum(p.total_units for p in self.products)
+        """Total planned units: the 'Total Units' input, or the closings total."""
+        return self.existing_units or int(round(sum(self.home_closings.values())))
 
-    def total_lot_units_by_year(self, cfg: ModelConfig) -> list[float]:
-        return [sum(row) for row in self.lot_delivery_scenario(cfg)]
-
-    def total_closings_by_year(self, cfg: ModelConfig) -> list[float]:
-        return [sum(row) for row in self.closings_scenario(cfg)]
-
-    def total_lot_value_lagged_by_year(self, cfg: ModelConfig) -> list[float]:
-        consumed = self.lots_consumed(cfg)
-        lagged = self.lot_value_lagged(cfg)
-        return [sum(lagged[r]) + sum(consumed[r]) for r in range(len(self.years()))]
-
-    def total_av_creation_lagged_by_year(self, cfg: ModelConfig) -> list[float]:
-        return [sum(row) for row in self.av_creation_lagged(cfg)]
-
-    def total_comm_value_by_year(self, cfg: ModelConfig) -> list[float]:
-        return [sum(row) for row in self.comm_value_created(cfg)]
-
-    def total_comm_sf_by_year(self, cfg: ModelConfig) -> list[float]:
-        return [sum(row) for row in self.comm_sf_sold(cfg)]
-
-    def market_value_at_buildout(self, cfg: ModelConfig) -> float:
-        prices = self.pricing(cfg)
-        closings = self.closings_scenario(cfg)
-        return sum(closings[r][i] * prices[r][i]
-                   for r in range(len(self.years()))
-                   for i in range(len(self.products)))
+    def stressed(self, pace_factor: float) -> "ProductLine":
+        if pace_factor >= 1.0:
+            return ProductLine(self.name, self.existing_units,
+                               dict(self.lot_deliveries), dict(self.home_closings),
+                               self.asp_base, self.asp_base_year)
+        return ProductLine(
+            self.name, self.existing_units,
+            _slow_schedule(self.lot_deliveries, pace_factor),
+            _slow_schedule(self.home_closings, pace_factor),
+            self.asp_base, self.asp_base_year)
 
 
-def _lag(block: list[list[float]], years: int) -> list[list[float]]:
-    """Shift a block down by `years` rows, zero-filling the top."""
-    if years <= 0:
-        return [row[:] for row in block]
-    width = len(block[0]) if block else 0
-    pad = [[0.0] * width for _ in range(years)]
-    return (pad + [row[:] for row in block])[:len(block)]
+@dataclass
+class DeveloperProjections:
+    """
+    Developer-supplied absorption assumptions, in aggregate or per-product mode.
+
+    Aggregate defaults match Viridian Farm PID No. 1 (716 units, weighted-average
+    base ASP $449,000 (2024) appreciating at the inflation rate).  Supply
+    ``products`` to drive the model from per-builder/per-product detail instead.
+    """
+
+    base_asp: float = 449_000
+    asp_base_year: int = 2024
+
+    # Aggregate drivers (used when ``products`` is empty) — the Viridian Farm
+    # PID No. 1 program: 716 units closing 2024-2029, lots delivered a year ahead.
+    home_closings: dict[int, int] = field(default_factory=lambda: {
+        2024: 4, 2025: 172, 2026: 202, 2027: 151, 2028: 96, 2029: 91,
+    })
+    lot_deliveries: dict[int, int] = field(default_factory=lambda: {
+        2023: 4, 2024: 172, 2025: 202, 2026: 151, 2027: 96, 2028: 91,
+    })
+    lot_market_value: dict[int, float] = field(default_factory=lambda: {
+        2023: 4 * 44_900.0, 2024: 172 * 44_900.0, 2025: 202 * 44_900.0,
+        2026: 151 * 44_900.0, 2027: 96 * 44_900.0, 2028: 91 * 44_900.0,
+    })
+
+    # Commercial market value placed by year (Comm Development sheet driver).
+    commercial_market_value: dict[int, float] = field(default_factory=dict)
+
+    total_lots: int = 716
+    pace_factor: float = 1.0
+
+    # Per-product input (overrides the aggregate drivers when non-empty).
+    products: list[ProductLine] = field(default_factory=list)
+
+    # ── Stress cases ──────────────────────────────────────────────────────
+    def stressed(self, pace_factor: float) -> "DeveloperProjections":
+        """Return a new projection at a reduced absorption pace (stress case)."""
+        if self.products:
+            return DeveloperProjections(
+                base_asp=self.base_asp, asp_base_year=self.asp_base_year,
+                commercial_market_value=_slow_schedule(self.commercial_market_value, pace_factor)
+                if (self.commercial_market_value and pace_factor < 1.0) else dict(self.commercial_market_value),
+                total_lots=self.total_lots, pace_factor=pace_factor,
+                products=[p.stressed(pace_factor) for p in self.products],
+            )
+        if pace_factor >= 1.0:
+            return DeveloperProjections(
+                base_asp=self.base_asp, asp_base_year=self.asp_base_year,
+                home_closings=dict(self.home_closings),
+                lot_market_value=dict(self.lot_market_value),
+                lot_deliveries=dict(self.lot_deliveries),
+                commercial_market_value=dict(self.commercial_market_value),
+                total_lots=self.total_lots, pace_factor=1.0,
+            )
+        return DeveloperProjections(
+            base_asp=self.base_asp, asp_base_year=self.asp_base_year,
+            home_closings=_slow_schedule(self.home_closings, pace_factor),
+            lot_market_value=_slow_schedule(self.lot_market_value, pace_factor),
+            lot_deliveries=dict(self.lot_deliveries),
+            commercial_market_value=_slow_schedule(self.commercial_market_value, pace_factor)
+            if self.commercial_market_value else {},
+            total_lots=self.total_lots, pace_factor=pace_factor,
+        )
+
+    # ── Queries ───────────────────────────────────────────────────────────
+    def asp(self, year: int) -> float:
+        """Aggregate average selling price (no-products mode)."""
+        n = max(0, year - self._inflation_start_year + 1)
+        return self.base_asp * (1.0 + self._infl) ** n
+
+    def new_home_market_value(self, year: int) -> float:
+        """Market value of homes closing in ``year`` (sum across products)."""
+        if self.products:
+            return sum(p.home_closings.get(year, 0) * p.asp(year, self._infl, self._inflation_start_year)
+                       for p in self.products)
+        return self.home_closings.get(year, 0) * self.asp(year)
+
+    # ── Lot-inventory inventory (drawn down as homes complete) ──────────────────
+    def _cumulative_lots(self, year: int) -> tuple[float, float, float]:
+        """
+        Cumulative (lots delivered units, lots delivered market value, homes
+        closed units) through ``year``.
+        """
+        cum_units = cum_value = cum_closed = 0.0
+        for y in sorted(set(self.lot_deliveries) | set(self.home_closings)):
+            if y > year:
+                break
+            cum_units += self.lot_deliveries.get(y, 0)
+            cum_value += self.lot_market_value.get(y, 0.0)
+            cum_closed += self.home_closings.get(y, 0)
+        return cum_units, cum_value, cum_closed
+
+    def vacant_lot_units(self, year: int) -> float:
+        """Platted/finished lots still vacant as of ``year`` = delivered − closed."""
+        cum_units, _, cum_closed = self._cumulative_lots(year)
+        return max(cum_units - cum_closed, 0.0)
+
+    def vacant_lot_market_value(self, year: int) -> float:
+        """
+        Market value of lots still vacant as of ``year``: the remaining lot
+        count (cumulative lots delivered − cumulative homes closed) valued at the
+        average delivered lot value.  Lots that have been built out into homes
+        are removed — their value is captured in the cumulative home market value
+        instead — so vacant lots and completed homes are not double-counted.
+        """
+        cum_units, cum_value, cum_closed = self._cumulative_lots(year)
+        if cum_units <= 0:
+            return 0.0
+        remaining = max(cum_units - cum_closed, 0.0)
+        return remaining * (cum_value / cum_units)
+
+    def existing_value_adjustments(self, cfg) -> dict:
+        """
+        Existing-value true-up credit and its amortization, keyed by ROLL year.
+
+        For each roll year entered in the Inputs historical table:
+          * Vacant land credit  = (entered vacant AV / vacant rate)  −  the
+            development-page "lot value to homes" for that year.
+          * Residential credit  = cumulative home market value  −  (entered
+            residential AV / residential rate)  −  home value added.
+        Both credits are recognised (positive) in the entry roll year so the deal
+        gets credit for the initial land/home value, then amortised back out
+        (equal negatives) so it is not double-counted as lots become homes:
+          * vacant   → the year after the last lot delivery through build-out;
+          * residential → one year after the vacant window (build-out + 1).
+        """
+        hist = getattr(cfg, "historical_av", None) or {}
+        if not hist:
+            return {}
+        out: dict[int, float] = {}
+        vac_sum = res_sum = 0.0
+        for R in sorted(hist):
+            h = hist[R]
+            vac = h.get("vacant_land")
+            res = h.get("residential")
+            if vac:
+                vrate = cfg.lot_inventory_taxable_rate(R + 1)
+                trued = vac / vrate if vrate else 0.0
+                base = (self.vacant_lot_market_value(R - 1)
+                        + self.lot_market_value.get(R, 0.0)
+                        - self.vacant_lot_market_value(R))
+                adj = trued - base
+                out[R] = out.get(R, 0.0) + adj
+                vac_sum += adj
+            if res:
+                rrate = cfg.residential_assessment_rate(R + 1)
+                beg = res / rrate if rrate else 0.0
+                added = self.new_home_market_value(R)
+                cum = self.cumulative_home_market_value.get(R, 0.0)
+                adj = cum - beg - added
+                out[R] = out.get(R, 0.0) + adj
+                res_sum += adj
+        lot_years = [y for y, u in self.lot_deliveries.items() if u]
+        home_years = [y for y, u in self.home_closings.items() if u]
+        if lot_years and home_years:
+            lld, lhc = max(lot_years), max(home_years)
+            # Vacant rolls off from the year after the last lot delivery through
+            # one year past build-out (last home closing); residential one year
+            # after vacant throughout.
+            vac_win = list(range(lld + 1, lhc + 2))          # e.g. 2027..2030
+            res_win = [y + 1 for y in vac_win]               # e.g. 2028..2031
+            if vac_win and abs(vac_sum) > 1e-6:
+                per = vac_sum / len(vac_win)
+                for y in vac_win:
+                    out[y] = out.get(y, 0.0) - per
+            if res_win and abs(res_sum) > 1e-6:
+                per = res_sum / len(res_win)
+                for y in res_win:
+                    out[y] = out.get(y, 0.0) - per
+        return out
+
+    @property
+    def is_per_product(self) -> bool:
+        return bool(self.products)
+
+    # ── Build ───────────────────────────────────────────────────────────────
+    def build(self, cfg, last_year: int = 2067) -> "DeveloperProjections":
+        """
+        Roll up per-product detail (if any) into the aggregate drivers, then
+        compute the cumulative home market value series (Summary column M) with
+        biennial reassessment.
+        """
+        self._infl = cfg.inflation_rate
+        self._inflation_start_year = cfg.inflation_start_year
+        self.last_year = last_year
+
+        # Derive aggregate drivers from products when in per-product mode.
+        if self.products:
+            years = set()
+            for p in self.products:
+                years |= set(p.lot_deliveries) | set(p.home_closings)
+            yrs = sorted(years)
+            self.home_closings = {
+                y: sum(p.home_closings.get(y, 0) for p in self.products) for y in yrs}
+            self.lot_deliveries = {
+                y: sum(p.lot_deliveries.get(y, 0) for p in self.products) for y in yrs}
+            # Lot market value = lots delivered × (ASP × platted-lot value %).
+            self.lot_market_value = {
+                y: sum(p.lot_deliveries.get(y, 0)
+                       * p.lot_value(y, self._infl, cfg.platted_lot_value,
+                                     cfg.inflation_start_year)
+                       for p in self.products) for y in yrs}
+            self.total_lots = sum(p.total_units for p in self.products)
+
+        # The home market value starts at zero (greenfield) and accrues as homes
+        # close.  "Total Units" is the planned build-out count, not pre-built
+        # value, so it does NOT seed the starting cumulative home market value.
+        M: dict[int, float] = {cfg.first_year: 0.0}
+        for y in range(cfg.first_year + 1, last_year + 1):
+            prev = M[y - 1]
+            reassess = prev * cfg.reassess_rate if self._is_reassess_year(y, cfg) else 0.0
+            M[y] = prev + self.new_home_market_value(y) + reassess
+
+        # Existing-home market-value floor from the certified roll.  When the
+        # district carries a hard-coded existing residential ASSESSED value
+        # (> $100k), gross it up to MARKET value using the primary residential
+        # taxable ratio for the certification year (taxable ÷ ratio).  If that implied market
+        # value exceeds the modeled cumulative home value on the certification
+        # roll, seed the cumulative home value with it (existing homes are already
+        # worth more than the greenfield build has reached) and re-accrue forward.
+        from .config import residential_taxable_ratio_for
+        # Adjustment (delta) applied to the cumulative home market value in the
+        # certification year, exposed for a highlighted column in the report.
+        self.cert_mv_adjustment_year: int | None = None
+        self.cert_mv_adjustment: float = 0.0
+        if (cfg.certification_date is not None
+                and cfg.existing_residential_value > 100_000):
+            cy = cfg.certification_date.year
+            ratio = residential_taxable_ratio_for(cy)
+            implied_mv = cfg.existing_residential_value / ratio if ratio else 0.0
+            lov_year = cfg.av_source_year(cy + 1)   # level of value backing the cert roll
+            calc_mv = M.get(lov_year, 0.0)
+            if implied_mv > calc_mv:
+                self.cert_mv_adjustment_year = lov_year
+                self.cert_mv_adjustment = implied_mv - calc_mv
+                M[lov_year] = implied_mv
+                for y in range(lov_year + 1, last_year + 1):
+                    reassess = (M[y - 1] * cfg.reassess_rate
+                                if self._is_reassess_year(y, cfg) else 0.0)
+                    M[y] = M[y - 1] + self.new_home_market_value(y) + reassess
+        self.cumulative_home_market_value = M
+
+        # Cumulative commercial market value.
+        C: dict[int, float] = {cfg.first_year: 0.0}
+        for y in range(cfg.first_year + 1, last_year + 1):
+            prev = C[y - 1]
+            reassess = (prev * cfg.reassess_comm_rate
+                        if self._is_reassess_year(y, cfg) else 0.0)
+            C[y] = prev + self.commercial_market_value.get(y, 0.0) + reassess
+        self.cumulative_commercial_market_value = C
+        return self
+
+    @staticmethod
+    def _is_reassess_year(year: int, cfg) -> bool:
+        """
+        Should value already on the roll be grown this year?
+
+        Utah county assessors update values **annually** based on a systematic
+        review of current market data (§ 59-2-303.1), with a detailed review of
+        each parcel at least every five years — so the answer is normally "every
+        year".  Set ``reassess_frequency = "Biennial"`` to model Colorado's
+        two-year reappraisal cycle instead, in which case the step is booked on
+        the level-of-value year that feeds the odd (or even) roll year.
+
+        No growth is applied on a certified roll: the county-certified value
+        already IS the roll for that year, so the model must not layer a
+        reassessment on top of it.
+        """
+        if year < cfg.first_year + 2:
+            return False
+        roll_year = year + 1
+        cert_date = getattr(cfg, "certification_date", None)
+        if cert_date is not None and roll_year == cert_date.year:
+            return False
+        if getattr(cfg, "reassess_frequency", "Annual").strip().lower() != "biennial":
+            return True
+        return ((roll_year % 2 == 0) if getattr(cfg, "reassess_on_even_years", False)
+                else (roll_year % 2 == 1))
+
+    # ── Per-product display helpers (for the Residential tab) ───────────────
+    def product_lines(self) -> list[ProductLine]:
+        """Return the product lines, or a single synthetic line in aggregate mode."""
+        if self.products:
+            return self.products
+        return [ProductLine(
+            name="All Products",
+            lot_deliveries=dict(self.lot_deliveries),
+            home_closings=dict(self.home_closings),
+            asp_base=self.base_asp, asp_base_year=self.asp_base_year,
+        )]
 
 
-# ── The Viridian Farm PID No. 1 schedule (this repo's reference deal) ─────────
+# ── The Viridian Farm PID No. 1 program (this repo's reference deal) ──────────
 
-def viridian_farm_projections() -> DevelopmentProjections:
-    """Absorption exactly as priced on 17 September 2024."""
-    lots = {
-        "Rear-Load Townhome":  (139, 365_620.0, "TH",
-                                {2024: 38, 2025: 60, 2026: 41}),
-        "Front-Load Townhome": (327, 394_910.0, "DU",
-                                {2024: 28, 2025: 48, 2026: 64, 2027: 96, 2028: 91}),
-        "Alley-Load Cottages": (30,  434_350.0, "SFD", {2024: 24, 2025: 6}),
-        "Front-Load Cottages": (88,  492_150.0, "SFD",
-                                {2024: 20, 2025: 36, 2026: 32}),
-        "8,000 Lots":          (23,  563_750.0, "SFD", {2023: 2, 2024: 21}),
-        "12,000 Lots":         (67,  635_500.0, "SFD",
-                                {2023: 2, 2024: 28, 2025: 30, 2026: 7}),
-        "18,000 Lots":         (41,  709_813.0, "SFD",
-                                {2024: 12, 2025: 22, 2026: 7}),
-        "21,000 Lots":         (1,   761_063.0, "SFD", {2024: 1}),
-    }
+#: Product, units, base ASP, and the lot-delivery schedule priced 17 Sept 2024.
+#: Homes close the year after their finished lots are delivered.
+VIRIDIAN_FARM_PRODUCTS = [
+    ("Rear-Load Townhome",  139, 365_620.0, {2023: 0, 2024: 38, 2025: 60, 2026: 41}),
+    ("Front-Load Townhome", 327, 394_910.0,
+     {2024: 28, 2025: 48, 2026: 64, 2027: 96, 2028: 91}),
+    ("Alley-Load Cottages",  30, 434_350.0, {2024: 24, 2025: 6}),
+    ("Front-Load Cottages",  88, 492_150.0, {2024: 20, 2025: 36, 2026: 32}),
+    ("8,000 Lots",           23, 563_750.0, {2023: 2, 2024: 21}),
+    ("12,000 Lots",          67, 635_500.0, {2023: 2, 2024: 28, 2025: 30, 2026: 7}),
+    ("18,000 Lots",          41, 709_813.0, {2024: 12, 2025: 22, 2026: 7}),
+    ("21,000 Lots",           1, 761_063.0, {2024: 1}),
+]
+
+
+def viridian_farm_projections(asp_base_year: int = 2024) -> "DeveloperProjections":
+    """Per-product absorption for Viridian Farm PID No. 1, exactly as priced."""
     products = [
-        Product(name=name, product_type=ptype, total_units=units, asp=asp,
-                lot_delivery=dict(sched),
-                # Homes close the year after the finished lots are delivered.
-                home_closings={y + 1: u for y, u in sched.items()})
-        for name, (units, asp, ptype, sched) in lots.items()
+        ProductLine(
+            name=name, existing_units=units,
+            lot_deliveries={y: u for y, u in sched.items() if u},
+            home_closings={y + 1: u for y, u in sched.items() if u},
+            asp_base=asp, asp_base_year=asp_base_year,
+        )
+        for name, units, asp, sched in VIRIDIAN_FARM_PRODUCTS
     ]
-    return DevelopmentProjections(start_year=2020, products=products)
+    return DeveloperProjections(products=products, total_lots=716)
