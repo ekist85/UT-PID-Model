@@ -47,6 +47,8 @@ class RefundingResult:
     refunding_escrow: float               # cost to defease the old series
     new_money_reimbursement: float        # additional reimbursement generated
     savings_vs_original_rate: float       # PV-style coupon saving indicator
+    refunding_sub: "object | None" = None      # SubLienResult for the refunding sub lien
+    refunding_sub_par: float = 0.0             # refunding subordinate par
 
 
 class RefundingAnalysis:
@@ -131,14 +133,34 @@ class RefundingAnalysis:
             term_bonds=cfg.senior_refunding_term_bonds,
         )
 
+        # ── Subordinate lien for the refunding — EXACTLY the same methodology as
+        # the new-money sub lien: build a senior surplus / debt-service-reserve
+        # fund against the (now active) refunding senior lien and size the largest
+        # subordinate par the residual surplus fully repays (principal + accreted
+        # interest).  The sub is dated on the refunding delivery date.
+        from .subordinate import SurplusFund, SubordinateLien
+        ref_first = delivery.year
+        ref_final = refunding_bond.final_year
+        ref_surplus = SurplusFund(cfg, self.sm).build(
+            refunding_bond, None, ref_first, ref_final)
+        refunding_sub_par = SubordinateLien(cfg, self.sm).size_par(
+            refunding_bond, ref_first, ref_final,
+            surplus_fund=ref_surplus, dated=delivery)
+        refunding_sub = SubordinateLien(cfg, self.sm).size(
+            refunding_sub_par, refunding_bond, ref_first, ref_final,
+            surplus_fund=ref_surplus, dated=delivery)
+
         # ── Sources & Uses ───────────────────────────────────────────────────
         su = SourcesUses(f"Refunding (Series {delivery.year})")
         su.sources["Refunding Senior Par"] = refunding_bond.par_amount
+        su.sources["Refunding Subordinate Par"] = refunding_sub_par
         su.sources["Released DSRF (refunded series)"] = released_dsrf
         su.sources["Surplus Funds on Hand"] = surplus_on_hand
 
         bond_insurance = refunding_bond.total_net_ds * cfg.bond_insurance_rate
-        uwd = cfg.uwd_senior_refunding * refunding_bond.par_amount
+        uwd_senior = cfg.uwd_senior_refunding * refunding_bond.par_amount
+        uwd_sub = cfg.uwd_sub * refunding_sub_par
+        uwd = uwd_senior + uwd_sub
 
         new_money = (
             su.total_sources
@@ -172,4 +194,6 @@ class RefundingAnalysis:
             refunding_escrow=refunding_escrow,
             new_money_reimbursement=new_money,
             savings_vs_original_rate=savings,
+            refunding_sub=refunding_sub,
+            refunding_sub_par=refunding_sub_par,
         )

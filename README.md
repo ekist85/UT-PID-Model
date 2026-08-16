@@ -92,13 +92,15 @@ fails and writes nothing, rather than quietly emitting a Colorado-flavoured Utah
 model. `tests/test_model.py::test_port_is_up_to_date_with_colorado` fails when
 the Colorado checkout has moved ahead.
 
-Three upstream fixes ride in the patch set and are worth pushing back to
-`co_metro_model`:
+**Currently pinned to Colorado `ba72e6b`** ("Add a subordinate lien to the
+refunding"). Colorado has commits beyond it — the Series C cash-flow bonds
+(`9cd959e`, `78ae56b`) — that are deliberately *not* ported yet, so check out
+`ba72e6b` in the Colorado repo before running the port or the `--check` test.
 
-* `SubordinateLien.size_par` rounds the solved par to the **nearest** $1,000,
-  which can land above the largest par the residual cashflow actually retires —
-  the base case then reports "fully repaid: False" by a few thousand dollars.
-  The port rounds down.
+Two upstream fixes ride in the patch set and are worth pushing back to
+`co_metro_model` (a third — flooring the solved subordinate par instead of
+rounding it — was adopted upstream in `ba72e6b`, so the patch is retired):
+
 * `SummaryModel.build` loops collection years to `dev.last_year` (2067) while
   the value builds stop at the senior final maturity, so the Summary tail shows
   a decade of zero taxable value and fee-only negative revenue. The port bounds
@@ -196,8 +198,9 @@ workbook:
   **Summary - Detail**, **Builder Lot Inventory Value**, **Residential Value**,
   **Development Projections**, Sources & Uses – First, Senior Lien DS – First,
   Subordinate Lien, Senior Surplus Fund, CAPI Fund – First, O&M Revenue,
-  Sources & Uses – Refunding, Senior Lien DS – Refunding, Senior Lien Coverage,
-  Call Schedule, **Notes**.
+  Sources & Uses – Refunding, Senior Lien DS – Refunding,
+  **Subordinate Lien – Refunding**, Senior Lien Coverage, Call Schedule,
+  **Notes**.
 
   The two **value tabs** are the single source of taxable value: the lot
   inventory build (value of new lots → less lots rolled into homes → net with
@@ -271,11 +274,16 @@ fails the suite.
    interest-only years are not tested. The shortfall is met from the debt
    service reserve. Lengthening the capitalized interest period past 36 months
    closes it.
-2. **The refunding generates no new money at 3 mills.** Refunding par plus the
-   released reserve and surplus on hand just covers defeasing both liens and the
-   transaction costs. Utah's tight levy caps leave far less refunding headroom
-   than Colorado's 50-plus mills — the capability is modeled and reported
-   honestly rather than assumed to pay.
+2. **The refunding only pays because it issues its own subordinate lien.**
+   Senior refunding par plus the released reserve and surplus on hand does *not*
+   cover defeasing both liens and the transaction costs — on its own the senior
+   refunding returns roughly **−$915,000**. Utah's fixed levy caps leave far less
+   refunding headroom than Colorado's 50-plus mills. What turns it positive is
+   the refunding subordinate lien ($1,997,000, sized against the residual surplus
+   the defeased new-money sub gives back), which lifts new money to
+   **+$1,052,126** and total developer reimbursement to **$6,491,070**. That
+   makes the refunding a subordinate-lien story, not a rate story — worth saying
+   out loud before anyone reads the headline number as interest savings.
 
 ## Tests
 

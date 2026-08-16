@@ -201,14 +201,32 @@ def _county_line(cfg, suffix: str = "") -> str:
     return base + suffix
 
 
-def _title(ws, lines: list[str], last_col: int):
-    for i, text in enumerate(lines, 1):
+def _title(ws, cfg, lines: list[str], last_col: int):
+    """
+    Standard three-row title band, in the order requested for the deliverables:
+      1. today's date
+      2. Reimbursement Analysis · {district} · {N} Lots · Tierra Financial Advisors
+      3. the sheet's own subtitle / description (``lines[1:]`` — ``lines[0]`` is the
+         district name, now folded into row 2).
+    Kept to three physical rows so every sheet's header row (row 5) is unaffected.
+    """
+    from datetime import date as _dt
+    _t = _dt.today()
+    today = f"{_t.strftime('%B')} {_t.day}, {_t.year}"
+    lots = getattr(cfg, "_doc_lots", None)
+    lot_txt = f"{lots:,} Lots" if lots else None
+    brand = "  ·  ".join(x for x in [
+        "Reimbursement Analysis", cfg.pid_name or None, lot_txt,
+        "Tierra Financial Advisors"] if x)
+    subtitle = " — ".join(str(x) for x in lines[1:] if x)
+    rows = [today, brand, subtitle]
+    for i, text in enumerate(rows, 1):
         ws.merge_cells(start_row=i, start_column=1, end_row=i, end_column=last_col)
         c = ws.cell(row=i, column=1, value=text)
         c.fill = _BLUE
         c.font = _TITLE_FONT if i == 1 else _WHITE_FONT
         c.alignment = _CENTER
-    ws.row_dimensions[len(lines) + 1].height = 6
+    ws.row_dimensions[len(rows) + 1].height = 6
 
 
 def _hdr(ws, row, col, label, width=None):
@@ -241,7 +259,7 @@ def _build_summary_sheet(ws, cfg, sm):
     mr, nsr, nsub = n + 1, n + 2, n + 3
     base += [(mr, "Mill Levy\nRevenue", 15), (nsr, "Net Senior\nRevenue", 15),
              (nsub, "Net Sub.\nRevenue", 15)]
-    _title(ws, [cfg.pid_name, _county_line(cfg),
+    _title(ws, cfg, [cfg.pid_name, _county_line(cfg),
                 "Taxable Value & Pledged Revenue"], nsub)
     for col, lbl, w in base:
         _hdr(ws, 5, col, lbl, w)
@@ -278,7 +296,7 @@ def _build_residential_av_sheet(ws, cfg, dev, sm):
     lot_rate = cfg.lot_inventory_taxable_ratio
     resid_ratio = cfg.resid_taxable_ratio
 
-    _title(ws, [cfg.pid_name, "Residential Taxable Value — Build",
+    _title(ws, cfg, [cfg.pid_name, "Residential Taxable Value — Build",
                 f"Lots @ {lot_rate:.0%} of market · Homes @ {resid_ratio:.3%} Residential Exemption · "
                 f"reassessment {cfg.reassess_rate:.1%}"], 9)
     hdrs = [
@@ -355,7 +373,7 @@ def _build_summary_light_sheet(ws, cfg, sm, dev, senior, refunding_bond=None):
     """
     vac = {r["collection"]: r for r in dev.lot_inventory_value_build(cfg)}
     res = {r["collection"]: r for r in dev.residential_value_build(cfg)}
-    _title(ws, [cfg.pid_name, _county_line(cfg, " — Summary (Light)"),
+    _title(ws, cfg, [cfg.pid_name, _county_line(cfg, " — Summary (Light)"),
                 "Aggregate per year: market value (beginning & ending) → total taxable "
                 "value → gross & net revenue for sizing."], 10)
     band = PatternFill("solid", fgColor="1F4E79")
@@ -459,7 +477,7 @@ def _build_summary_av_sheet(ws, cfg, dev, sm):
         c += 1
     last_col = c - 1
 
-    _title(ws, [cfg.pid_name, _county_line(cfg, " — Summary (Detail)"),
+    _title(ws, cfg, [cfg.pid_name, _county_line(cfg, " — Summary (Detail)"),
                 "Taxable-value components → total taxable value → revenue waterfall → "
                 "net revenue for sizing.  Lot-inventory and home taxable value flow from "
                 "the Builder Lot Inventory Value / Residential Value tabs."], last_col)
@@ -526,7 +544,7 @@ def _build_summary_av_sheet(ws, cfg, dev, sm):
 def _build_ds_sheet(ws, cfg, tranche, title, sm=None, target_coverage=None):
     if target_coverage is None:
         target_coverage = tranche.coverage
-    _title(ws, [cfg.pid_name, title,
+    _title(ws, cfg, [cfg.pid_name, title,
                 f"Par ${tranche.par_amount:,.0f}  ·  {tranche.rate:.2%}  ·  "
                 f"{target_coverage:.2f}x coverage"], 18)
     hdrs = [
@@ -800,7 +818,9 @@ def _build_su_refunding_sheet(ws, cfg, refunding_result, dev=None):
     yr = rb.delivery.year
     par = rb.par_amount
     prem = rb.total_premium
-    uwd = cfg.uwd_senior_refunding * par
+    sub_par = su.sources.get("Refunding Subordinate Par", 0.0)
+    uwd_senior = cfg.uwd_senior_refunding * par
+    uwd = su.uses.get("Underwriter's Discount", uwd_senior)   # senior + subordinate
     coi = cfg.coi_refunding
     released_dsrf = su.sources.get("Released DSRF (refunded series)", 0.0)
     surplus_oh = su.sources.get("Surplus Funds on Hand", 0.0)
@@ -855,7 +875,9 @@ def _build_su_refunding_sheet(ws, cfg, refunding_result, dev=None):
     # Sources and Uses
     section(7, "Sources and Uses"); r = 9
     colhdr(r); r += 1
-    line(r, "Par Amount of Bonds", par); r += 1
+    line(r, "Par Amount of Bonds (Senior)", par); r += 1
+    if sub_par:
+        line(r, "Par Amount of Bonds (Subordinate)", sub_par); r += 1
     if abs(prem) > 0.5:
         line(r, "Plus: Premium / (Discount)", prem); r += 1
     line(r, "Released DSRF (Refunded Series)", released_dsrf); r += 1
@@ -897,8 +919,8 @@ def _build_su_refunding_sheet(ws, cfg, refunding_result, dev=None):
 
     section(r, "Bond Statistics:"); r += 2
     drow(r, "Average Life (years)", _avg_life(prin, rb.delivery, par), fmt='0.00'); r += 1
-    drow(r, "Arbitrage TIC", _tic(gross, par + prem - uwd, rb.delivery), fmt='0.000%'); r += 1
-    drow(r, "All-in TIC", _tic(gross, par + prem - uwd - coi, rb.delivery), fmt='0.000%'); r += 1
+    drow(r, "Arbitrage TIC", _tic(gross, par + prem - uwd_senior, rb.delivery), fmt='0.000%'); r += 1
+    drow(r, "All-in TIC", _tic(gross, par + prem - uwd_senior - coi, rb.delivery), fmt='0.000%'); r += 1
     drow(r, "Maximum Annual Debt Service",
          max(rb.annual_gross_ds().values()) if rb.schedule else 0.0); r += 1
     drow(r, "Total Debt Service", sum(p.gross_total for p in rb.schedule)); r += 1
@@ -927,7 +949,7 @@ def _build_capi_fund_sheet(ws, cfg, senior):
     """
     capi_rows = [p for p in senior.schedule if p.capitalized_interest > 0.005]
     deposit = sum(p.capitalized_interest for p in senior.schedule)
-    _title(ws, [cfg.pid_name, "Capitalized Interest (CAPI) Fund — Senior Lien",
+    _title(ws, cfg, [cfg.pid_name, "Capitalized Interest (CAPI) Fund — Senior Lien",
                 f"${deposit:,.0f} funds ~{cfg.capi_term} months of interest through "
                 f"{cfg.capi_end_date:%b %Y}; balance earns {cfg.interest_earn_rate:.2%}/yr"], 6)
     for c, lbl, w in [(1, "Date", 13), (2, "Beginning\nBalance", 16),
@@ -982,7 +1004,7 @@ def _build_capi_fund_sheet(ws, cfg, senior):
 
 # ── Sources & Uses sheet ──────────────────────────────────────────────────────
 def _build_su_sheet(ws, cfg, su, title, subtitle=""):
-    _title(ws, [cfg.pid_name, title, subtitle], 3)
+    _title(ws, cfg, [cfg.pid_name, title, subtitle], 3)
     ws.column_dimensions["A"].width = 34
     ws.column_dimensions["B"].width = 4
     ws.column_dimensions["C"].width = 18
@@ -1015,9 +1037,10 @@ def _build_su_sheet(ws, cfg, su, title, subtitle=""):
 
 
 # ── Subordinate cash-flow sheet ───────────────────────────────────────────────
-def _build_sub_sheet(ws, cfg, sub_result):
-    _title(ws, [cfg.pid_name,
-                f"Subordinate Lien Cash-Flow Bonds  ·  {sub_result.coverage:.2f}x coverage",
+def _build_sub_sheet(ws, cfg, sub_result, series_label=""):
+    _title(ws, cfg, [cfg.pid_name,
+                f"Subordinate Lien Cash-Flow Bonds{series_label}  ·  "
+                f"{sub_result.coverage:.2f}x coverage",
                 f"Par ${sub_result.par_amount:,.0f}  ·  {sub_result.rate:.2%}  "
                 f"(unpaid interest accretes)"], 15)
     # Two-row header: section banners (row 5) over grouped columns (row 6).
@@ -1104,7 +1127,7 @@ def _build_sub_sheet(ws, cfg, sub_result):
 
 # ── Senior surplus fund sheet ─────────────────────────────────────────────────
 def _build_surplus_sheet(ws, cfg, surplus_fund):
-    _title(ws, [cfg.pid_name, "Senior Surplus / Debt-Service-Reserve Fund",
+    _title(ws, cfg, [cfg.pid_name, "Senior Surplus / Debt-Service-Reserve Fund",
                 f"Target ${surplus_fund.target:,.0f}  ·  earns {cfg.interest_earn_rate:.2%} "
                 f"on balance  (excess flows to subordinate lien)"], 7)
     hdrs = [(1, "Year", 8), (2, "Senior\nResidual", 15),
@@ -1129,7 +1152,7 @@ def _build_surplus_sheet(ws, cfg, surplus_fund):
 # ── Lot-inventory value build (Wells-Fargo-style presentation) ──────────────────
 def _build_lot_inventory_value_sheet(ws, cfg, dev):
     rows = dev.lot_inventory_value_build(cfg)
-    _title(ws, [cfg.pid_name, "Builder Lot Inventory Value — Residential",
+    _title(ws, cfg, [cfg.pid_name, "Builder Lot Inventory Value — Residential",
                 "Value of new lots → less lots rolled into homes → net (lagged) → "
                 "certified-value adjustments → cumulative 100% lot value → taxable "
                 "value @ the residential exemption."], 10)
@@ -1140,9 +1163,11 @@ def _build_lot_inventory_value_sheet(ws, cfg, dev):
             (9, "Taxable\nRatio", 11), (10, "Taxable\nValue of Lots", 15)]
     for col, lbl, w in hdrs:
         _hdr(ws, 5, col, lbl, w)
-    # Historical (already-set) roll years come from the certified Inputs template; their
-    # taxable ratios are blue-fonted, projected-forward ratios keep the normal font.
-    hist_cut = max((cfg.historical_av or {}).keys(), default=None)
+    # Historical (already-set) roll years — those set before the bonds are dated
+    # (roll year < delivery year) plus any entered in the certified inputs table.
+    # Their taxable ratios are blue-fonted; projected-forward ratios keep the
+    # normal font.  Dynamic off the dated date — no hardcoded years.
+    hist_cut = max([cfg.delivery.year - 1, *(cfg.historical_av or {})])
     for i, r in enumerate(rows):
         rw = 6 + i
         fill = _GRAY if i % 2 else _WHITE
@@ -1169,7 +1194,7 @@ def _build_lot_inventory_value_sheet(ws, cfg, dev):
 # ── Residential value build (Wells-Fargo-style presentation) ──────────────────
 def _build_residential_value_sheet(ws, cfg, dev):
     rows = dev.residential_value_build(cfg)
-    _title(ws, [cfg.pid_name, "Residential Value — Projected Taxable Value",
+    _title(ws, cfg, [cfg.pid_name, "Residential Value — Projected Taxable Value",
                 "Beginning market value → + new home value added to rolls → + annual "
                 "reassessment → + certified-value adjustments → gross market value → "
                 "taxable value @ the residential exemption."], 10)
@@ -1180,8 +1205,9 @@ def _build_residential_value_sheet(ws, cfg, dev):
             (9, "Taxable\nRatio", 11), (10, "Taxable\nValue", 15)]
     for col, lbl, w in hdrs:
         _hdr(ws, 5, col, lbl, w)
-    # Historical (already-set) roll years from the certified Inputs template → blue ratio.
-    hist_cut = max((cfg.historical_av or {}).keys(), default=None)
+    # Historical (already-set) roll years — set before the bonds are dated (roll
+    # year < delivery year) plus any entered in the certified inputs table → blue ratio.
+    hist_cut = max([cfg.delivery.year - 1, *(cfg.historical_av or {})])
     for i, r in enumerate(rows):
         rw = 6 + i
         fill = _GRAY if i % 2 else _WHITE
@@ -1206,7 +1232,7 @@ def _build_residential_value_sheet(ws, cfg, dev):
 def _build_coverage_sheet(ws, cfg, sm, senior, refunding_bond=None):
     from .debt_service import senior_coverage_schedule
     _RED = PatternFill("solid", fgColor="FFC7CE")
-    _title(ws, [cfg.pid_name, "Senior Lien — Annual Debt Service Coverage",
+    _title(ws, cfg, [cfg.pid_name, "Senior Lien — Annual Debt Service Coverage",
                 f"Target {cfg.dsc_senior:.2f}x (refunding {cfg.dsc_refunding:.2f}x)"], 6)
     hdrs = [(1, "Collection\nYear", 12), (2, "Net Senior\nRevenue", 16),
             (3, "Senior Net\nDebt Service", 16), (4, "Coverage\nFactor", 13),
@@ -1240,7 +1266,7 @@ def _build_om_sheet(ws, cfg, sm):
     """
     ops_mill = cfg.mill_levy_ops_target
     coll = cfg.tax_collect_mill_prc
-    _title(ws, [cfg.pid_name, "Operations & Maintenance (O&M) Revenue and Expense",
+    _title(ws, cfg, [cfg.pid_name, "Operations & Maintenance (O&M) Revenue and Expense",
                 f"Operations mill levy {ops_mill:.3f} mills @ {coll:.1%} collection"
                 + (f"  ·  O&M expense ${cfg.om_expense:,.0f} base, inflating at "
                    f"{cfg.om_growth_rate:.1%}" if cfg.om_expense else
@@ -1305,6 +1331,10 @@ def build_excel_report(
 ) -> str:
     wb = openpyxl.Workbook()
 
+    # Total lots for the standard title band (Reimbursement Analysis · district ·
+    # N Lots · Tierra Financial Advisors).
+    cfg._doc_lots = dev.total_lots if dev is not None else None
+
     ws = wb.active
     if dev is not None:
         # Two summary tabs: a light headline landing page, then the full detail.
@@ -1350,6 +1380,10 @@ def build_excel_report(
     if sub_result is not None:
         _build_sub_sheet(wb.create_sheet("Subordinate Lien"), cfg, sub_result)
 
+    if refunding_result is not None and getattr(refunding_result, "refunding_sub", None) is not None:
+        _build_sub_sheet(wb.create_sheet("Subordinate Lien - Refunding"), cfg,
+                         refunding_result.refunding_sub, series_label=" — Refunding")
+
     # Optional-redemption (call) schedule — derived output.
     _build_call_schedule_sheet(wb.create_sheet("Call Schedule"), cfg, refunding_result)
 
@@ -1365,6 +1399,7 @@ def build_excel_report(
         "Sources & Uses - First", "Senior Lien DS - First",
         "Subordinate Lien", "Senior Surplus Fund", "CAPI Fund - First", "O&M Revenue",
         "Sources & Uses - Refunding", "Senior Lien DS - Refunding",
+        "Subordinate Lien - Refunding",
         "Senior Lien Coverage", "Call Schedule", "Notes",
     ]
     order = {name: i for i, name in enumerate(desired)}
@@ -1397,7 +1432,7 @@ def _build_call_schedule_sheet(ws, cfg, refunding_result=None):
     ws.column_dimensions["B"].width = 52
     ws.column_dimensions["C"].width = 22
 
-    _title(ws, [cfg.pid_name,
+    _title(ws, cfg, [cfg.pid_name,
                 _county_line(cfg, " — Optional Redemption (Call) Schedule"),
                 "Callable at par plus the redemption premium below, stepping down "
                 "1.00%/yr to par; call protection runs from the delivery date"], 3)

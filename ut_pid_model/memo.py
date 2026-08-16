@@ -250,13 +250,24 @@ def build_memo_html(cfg, sm, senior, su, sub=None, refunding=None, dev=None,
         rd = cfg.delivery_refunding
         rb = refunding.refunding_bond
         add = refunding.new_money_reimbursement
+        ref_sub_par = getattr(refunding, "refunding_sub_par", 0.0) or 0.0
         cum += add
         total_reimb += add
         rows.append(
-            f"<tr><td class='l'>Senior Refunding Bonds, Series {rd.year}</td>"
+            f"<tr><td class='l'>Senior Refunding Bonds, Series {rd.year}A</td>"
             f"<td class='c'>{_md(rd)}</td><td>{_money(rb.par_amount)}</td>"
             f"<td class='c'>{cfg.senior_refunding_interest_rate:.2%}</td>"
-            f"<td>{_money(add)}</td><td>{_money(cum)}</td></tr>")
+            f"<td>&mdash;</td><td>&mdash;</td></tr>")
+        if ref_sub_par > 0:
+            rows.append(
+                f"<tr><td class='l'>Refunding Subordinate Lien Cash-Flow Note</td>"
+                f"<td class='c'>{_md(rd)}</td><td>{_money(ref_sub_par)}</td>"
+                f"<td class='c'>{cfg.sub_interest_rate:.2%}</td>"
+                f"<td>&mdash;</td><td>&mdash;</td></tr>")
+        rows.append(
+            f"<tr class='sub'><td class='l'>Refunding &mdash; Net Reimbursement</td>"
+            f"<td class='c'></td><td>{_money(rb.par_amount + ref_sub_par)}</td>"
+            f"<td class='c'></td><td>{_money(add)}</td><td>{_money(cum)}</td></tr>")
     rows.append(
         f"<tr class='total'><td class='c'>Total Developer Reimbursement</td><td></td><td></td>"
         f"<td></td><td>{_money(total_reimb)}</td><td>{_money(total_reimb)}</td></tr>")
@@ -324,7 +335,7 @@ def build_memo_html(cfg, sm, senior, su, sub=None, refunding=None, dev=None,
                   else '<span class="brand">Tierra Financial Advisors</span>')
     header_html = (
         f'<table class="page-header"><tr><td>{brand_cell}</td>'
-        f'<td class="hdr-right">Reimbursement Analysis &ndash; {district}<br>{today}</td>'
+        f'<td class="hdr-right">Reimbursement Analysis &ndash; {district}</td>'
         f'</tr></table>')
 
     html = f"""<!DOCTYPE html><html><head><meta charset="utf-8">
@@ -338,8 +349,13 @@ def build_memo_html(cfg, sm, senior, su, sub=None, refunding=None, dev=None,
 
 {header_html}
 
-<h1>Reimbursement Analysis — {district}</h1>
-<p>{today}</p>
+<div class="doc-title" style="text-align:center;margin:4px 0 18px 0;line-height:1.3;">
+  <div style="font-size:10.5pt;color:#555;">{today}</div>
+  <div style="font-size:18pt;font-weight:bold;color:#1F4E79;">Reimbursement Analysis</div>
+  <div style="font-size:13pt;font-weight:bold;">{district}</div>
+  <div style="font-size:11pt;">{total_lots:,} Lots</div>
+  <div style="font-size:11pt;font-weight:bold;color:#1F4E79;">Tierra Financial Advisors</div>
+</div>
 <p>{addressee_html}</p>
 <p>Dear {developer},</p>
 <p class="re-line">RE: {district} &ndash; Reimbursement Analysis</p>

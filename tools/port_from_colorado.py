@@ -929,41 +929,9 @@ _p("summary.py", '''            net_sub_revenue = mill_revenue + uniform_fee - c
 
 # ── subordinate.py ───────────────────────────────────────────────────────────
 
-# Upstream rounds the solved par to the NEAREST $1,000, which can round up past
-# the largest amount the residual cashflow actually retires — the base case then
-# reports "fully repaid: False" by a few thousand dollars.  Round down instead;
-# worth pushing back to co_metro_model.
-_p("subordinate.py", '''        lo, hi = 0.0, max_par
-        if repaid(hi):
-            return round(hi / 1000.0) * 1000.0
-        for _ in range(40):
-            mid = (lo + hi) / 2.0
-            if repaid(mid):
-                lo = mid
-            else:
-                hi = mid
-        return round(lo / 1000.0) * 1000.0''',
-   '''        lo, hi = 0.0, max_par
-        if repaid(hi):
-            return math.floor(hi / 1000.0) * 1000.0
-        for _ in range(40):
-            mid = (lo + hi) / 2.0
-            if repaid(mid):
-                lo = mid
-            else:
-                hi = mid
-        # Round DOWN: rounding to the nearest $1,000 can land above the largest
-        # par the residual surplus retires, which would leave the note short at
-        # final maturity.
-        return math.floor(lo / 1000.0) * 1000.0''')
-
-_p("subordinate.py", '''from __future__ import annotations
-
-from dataclasses import dataclass, field''',
-   '''from __future__ import annotations
-
-import math
-from dataclasses import dataclass, field''')
+# The par-rounding fix that used to live here (round → floor, so the solved par
+# never lands above the largest amount the residual cashflow retires) was adopted
+# upstream in ba72e6b.  Nothing to patch.
 
 
 # Upstream loops collection years to ``dev.last_year`` (2067) while the value
@@ -991,7 +959,6 @@ _p("summary.py", '''        # Collection years run from first_year+2 (first AV a
 # to the first payment date AFTER dating instead, which is correct in both
 # states.  Worth pushing back to co_metro_model.
 _p("subordinate.py", '''            pay_date = date(y, cfg.prin_maturity, cfg.prin_maturity_day_sub)
-            dated = cfg.delivery
             if y < dated.year:
                 year_frac = 0.0
             elif y == dated.year:
@@ -1000,7 +967,6 @@ _p("subordinate.py", '''            pay_date = date(y, cfg.prin_maturity, cfg.pr
                 year_frac = 1.0''',
    '''            pay_date = date(y, cfg.prin_maturity, cfg.prin_maturity_day_sub)
             prior_pay = date(y - 1, cfg.prin_maturity, cfg.prin_maturity_day_sub)
-            dated = cfg.delivery
             if pay_date <= dated:
                 year_frac = 0.0                       # bonds not yet dated
             elif prior_pay <= dated:
@@ -1412,7 +1378,7 @@ _p("report.py", '''            "trust": trust, "subtrust": subtrust, "om": om, "
 # operating budget or whether the debt levy is carrying it.
 _p("report.py", '''    ops_mill = cfg.mill_levy_ops_target
     coll = cfg.tax_collect_mill_prc
-    _title(ws, [cfg.pid_name, "Operations & Maintenance (O&M) Revenue Projection",
+    _title(ws, cfg, [cfg.pid_name, "Operations & Maintenance (O&M) Revenue Projection",
                 f"Operations mill levy {ops_mill:.3f} mills @ {coll:.1%} collection"], 6)
     hdrs = [(1, "Collection\\nYear", 12), (2, "Total\\nTaxable Value", 16),
             (3, "Operations\\nMill Levy", 13),
@@ -1421,7 +1387,7 @@ _p("report.py", '''    ops_mill = cfg.mill_levy_ops_target
             (6, "Total Available\\nfor O&M", 16)]''',
    '''    ops_mill = cfg.mill_levy_ops_target
     coll = cfg.tax_collect_mill_prc
-    _title(ws, [cfg.pid_name, "Operations & Maintenance (O&M) Revenue and Expense",
+    _title(ws, cfg, [cfg.pid_name, "Operations & Maintenance (O&M) Revenue and Expense",
                 f"Operations mill levy {ops_mill:.3f} mills @ {coll:.1%} collection"
                 + (f"  ·  O&M expense ${cfg.om_expense:,.0f} base, inflating at "
                    f"{cfg.om_growth_rate:.1%}" if cfg.om_expense else

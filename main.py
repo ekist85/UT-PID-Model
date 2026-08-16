@@ -198,6 +198,12 @@ def run_model(export: bool = True, output_dir: str | None = None,
         print(f"    Callable principal refunded: "
               f"${refunding.refunded_par_outstanding:,.0f}")
         print(f"    Refunding escrow (defeasance): ${refunding.refunding_escrow:,.0f}")
+        if refunding.refunding_sub is not None:
+            print(f"    Refunding subordinate lien: par "
+                  f"${refunding.refunding_sub_par:,.0f} "
+                  f"({refunding.refunding_sub.coverage:.2f}x, "
+                  f"{refunding.refunding_sub.rate:.0%} accreting)  |  "
+                  f"fully repaid: {refunding.refunding_sub.fully_repaid}")
         print(f"    >>> Additional reimbursement (NEW MONEY): "
               f"${refunding.new_money_reimbursement:,.0f}")
         total_reimb = su.reimbursement + refunding.new_money_reimbursement

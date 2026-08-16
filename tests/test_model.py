@@ -249,6 +249,52 @@ def test_refunding_defeases_the_callable_principal(built, senior):
         res.refunded_par_outstanding * 1.03)
 
 
+def test_refunding_issues_its_own_subordinate_lien(built, senior):
+    """Sized by the same method as the new-money sub, dated on the refunding
+    delivery, and fully repaid by its final maturity."""
+    cfg, _dev, sm = built
+    res = RefundingAnalysis(cfg, sm).run(senior, surplus_on_hand=0.0, sub_escrow=0.0)
+    assert res.refunding_sub is not None
+    assert res.refunding_sub_par > 0
+    assert res.refunding_sub.par_amount == pytest.approx(res.refunding_sub_par)
+    assert res.refunding_sub.fully_repaid
+    assert res.refunding_sub_par % 1000 == 0          # floored to the $1,000
+
+
+def test_refunding_sub_first_coupon_is_a_stub_from_the_refunding_delivery(built, senior):
+    """Dated 1 March, first pays 15 March — a 14-day stub, not a full year."""
+    cfg, _dev, sm = built
+    res = RefundingAnalysis(cfg, sm).run(senior, surplus_on_hand=0.0, sub_escrow=0.0)
+    first = res.refunding_sub.rows[0]
+    assert first["year"] == cfg.delivery_refunding.year
+    implied = first["current_interest"] / (res.refunding_sub_par * cfg.sub_interest_rate)
+    assert implied == pytest.approx(14 / 360, abs=1e-4)
+
+
+def test_refunding_new_money_depends_on_the_refunding_sub(built, senior):
+    """At 3 mills the senior refunding alone returns LESS than it costs once the
+    new-money sub is defeased; the refunding subordinate lien is what makes the
+    refunding pay.  If this ever flips, the 'new money' headline needs rereading."""
+    cfg, _dev, sm = built
+    ref_year = cfg.delivery_refunding.year
+    final = senior.final_year
+    sf = SurplusFund(cfg, sm).build(senior, None, cfg.first_collection_year, final)
+    sub_par = SubordinateLien(cfg, sm).size_par(
+        senior, cfg.first_collection_year, final, surplus_fund=sf)
+    sub = SubordinateLien(cfg, sm).size(
+        sub_par, senior, cfg.first_collection_year, final, surplus_fund=sf)
+    srow = {r["year"]: r for r in sub.rows}[ref_year]
+    res = RefundingAnalysis(cfg, sm).run(
+        senior,
+        surplus_on_hand={r.year: r for r in sf.rows}[ref_year].reserve_balance,
+        sub_escrow=srow["principal_balance"] + srow["accrued_balance"])
+    # Dropping the refunding sub removes its par from sources and its
+    # underwriter's discount from uses.
+    senior_only = res.new_money_reimbursement - res.refunding_sub_par * (1 - cfg.uwd_sub)
+    assert senior_only < 0, senior_only
+    assert res.new_money_reimbursement > 0
+
+
 # ── Utah vs Colorado behaviour ────────────────────────────────────────────────
 
 def test_utah_base_dwarfs_the_colorado_base_for_the_same_homes(built):
@@ -364,6 +410,7 @@ EXPECTED_TABS = [
     "Sources & Uses - First", "Senior Lien DS - First", "Subordinate Lien",
     "Senior Surplus Fund", "CAPI Fund - First", "O&M Revenue",
     "Sources & Uses - Refunding", "Senior Lien DS - Refunding",
+    "Subordinate Lien - Refunding",
     "Senior Lien Coverage", "Call Schedule", "Notes",
 ]
 

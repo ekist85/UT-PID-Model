@@ -27,7 +27,6 @@ Structure modeled
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -245,10 +244,14 @@ class SubordinateLien:
         *,
         refunding: BondTranche | None = None,
         surplus_fund: SurplusFund | None = None,
+        dated: date | None = None,
     ) -> SubLienResult:
         cfg = self.cfg
         rate = cfg.sub_interest_rate
         coverage = cfg.dsc_sub
+        # Interest accrues from the bonds' dated date (the new-money delivery by
+        # default; the refunding delivery for a refunding sub lien).
+        dated = dated or cfg.delivery
 
         if surplus_fund is None:
             surplus_fund = SurplusFund(cfg, self.sm).build(
@@ -281,7 +284,6 @@ class SubordinateLien:
             # period after that is a full year (12/15 → 12/15).
             pay_date = date(y, cfg.prin_maturity, cfg.prin_maturity_day_sub)
             prior_pay = date(y - 1, cfg.prin_maturity, cfg.prin_maturity_day_sub)
-            dated = cfg.delivery
             if pay_date <= dated:
                 year_frac = 0.0                       # bonds not yet dated
             elif prior_pay <= dated:
@@ -340,6 +342,7 @@ class SubordinateLien:
         *,
         refunding: BondTranche | None = None,
         surplus_fund: SurplusFund | None = None,
+        dated: date | None = None,
         max_par: float = 50_000_000.0,
     ) -> float:
         """
@@ -356,10 +359,14 @@ class SubordinateLien:
             if par <= 0:
                 return True
             res = self.size(par, senior, first_year, final_year,
-                            refunding=refunding, surplus_fund=surplus_fund)
+                            refunding=refunding, surplus_fund=surplus_fund, dated=dated)
             last = res.rows[-1]
             return last["principal_balance"] <= 1.0 and last["accrued_balance"] <= 1.0
 
+        # Floor (not round) to the nearest $1,000 so the rounded par never exceeds
+        # the largest fully-repayable par — repayment is monotone decreasing in par,
+        # so flooring keeps the note fully repaid by final maturity.
+        import math
         lo, hi = 0.0, max_par
         if repaid(hi):
             return math.floor(hi / 1000.0) * 1000.0
@@ -369,9 +376,6 @@ class SubordinateLien:
                 lo = mid
             else:
                 hi = mid
-        # Round DOWN: rounding to the nearest $1,000 can land above the largest
-        # par the residual surplus retires, which would leave the note short at
-        # final maturity.
         return math.floor(lo / 1000.0) * 1000.0
 
     def to_dataframe(self, result: SubLienResult) -> pd.DataFrame:

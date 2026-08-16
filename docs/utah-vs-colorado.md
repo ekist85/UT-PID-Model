@@ -311,13 +311,12 @@ leaving Colorado behaviour in a Utah model.
 
 ## 13. What rides in the port beyond the renames
 
-Three upstream defects are fixed in the patch set and should go back to
-`co_metro_model`:
+Two upstream defects are fixed in the patch set and should go back to
+`co_metro_model`. A third — `SubordinateLien.size_par` rounding the solved par
+to the *nearest* $1,000, which can land above the largest par the residual
+cashflow actually retires — was adopted upstream in `ba72e6b`, so that patch is
+retired.
 
-* **`SubordinateLien.size_par` rounds to the nearest $1,000.** The bisection
-  solves the largest par the residual cashflow retires, then rounds — and
-  rounding up lands above it, so the base case reports the note as not fully
-  repaid by a few thousand dollars. The port rounds down.
 * **`SummaryModel.build` runs past the value builds.** The loop ends at
   `dev.last_year` (2067) while the value builds stop at the senior final
   maturity, so the Summary carries a decade of zero taxable value and fee-only
@@ -346,12 +345,45 @@ falls back to the table.
 Two smaller Utah-specific departures ride alongside:
 
 * **The memo prints negative amounts in accounting parentheses.** Colorado's
-  `_money` helper renders `$-914,919`. Under Utah's fixed levy caps a refunding
-  can genuinely return less than it costs, so the memo has to
-  read correctly when it does: `($914,919)`.
+  `_money` helper renders `$-914,919`. Under Utah's fixed levy caps the *senior*
+  refunding on its own does return less than it costs — roughly −$915,000 before
+  the refunding subordinate lien is added — so the memo has to read correctly
+  when a negative lands in a table: `($914,919)`.
 * **Colorado vocabulary is scrubbed out of internals, not just labels.** Locals
   and dict keys carrying `sot` (specific ownership tax), `tabor`, and
   `treasurer_fee` are renamed to `uniform_fee`, `resid_ratio`, and
   `collection_fee`, and the module docstrings and section comments that still
   described Gallagher adjustments and odd-year reassessment are rewritten. These
   never reached a number, but they reach anyone reading the code.
+
+---
+
+## 14. The refunding is a subordinate-lien story
+
+The refunding now issues its own subordinate cash-flow lien, sized by exactly
+the same method as the new-money sub: a senior surplus / debt-service-reserve
+fund is built against the refunding senior lien and the largest subordinate par
+the residual surplus fully repays is solved by bisection, dated on the refunding
+delivery date.
+
+That matters more in Utah than it does in Colorado. At 3 mills the senior
+refunding alone does not pay: refunding par plus the released reserve and the
+surplus on hand comes to roughly $915,000 *less* than the cost of defeasing both
+liens and covering the transaction costs. Colorado's 50-plus mills leave enough
+headroom that the senior refunding can carry itself; Utah's fixed § 17D-4-303
+cap does not.
+
+What turns it positive is the refunding sub. Defeasing the new-money
+subordinate note hands the residual surplus back, and the refunding sub is sized
+against it — $1,997,000 on the reference deal, against $1,730,000 of new-money
+sub retired. Net new money goes from −$914,919 to **+$1,052,126**, and total
+developer reimbursement from $4,524,025 to **$6,491,070**.
+
+The number to read is therefore not an interest saving. It is the district
+re-levering the same residual surplus at the subordinate rate, on a lien that
+accretes at 8.125% and runs to 2059. Worth stating plainly to anyone who sees
+"$1.05 million of new money" and reads it as refunding savings.
+
+*Code:* `RefundingAnalysis.run` (sizes it), `RefundingResult.refunding_sub` /
+`.refunding_sub_par`, the **Subordinate Lien – Refunding** tab, and the memo's
+bond-program table.

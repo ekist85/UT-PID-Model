@@ -40,6 +40,7 @@ _TITLEFONT = Font(bold=True, color="FFFFFF", size=12)
 _SECTFONT = Font(bold=True, color="FFFFFF", size=10)
 _HDRFONT = Font(bold=True, color="1F4E79", size=9)
 _BODY = Font(size=9)
+_CERTFONT = Font(size=9, color="0070C0")   # historical (already-set) taxable ratios
 _TOTFONT = Font(bold=True, color="1F4E79", size=9)
 _THIN = Side(style="thin", color="BFBFBF")
 _BORDER = Border(left=_THIN, right=_THIN, top=_THIN, bottom=_THIN)
@@ -396,11 +397,16 @@ def build_residential_sheet(ws, cfg, dev, sm):
         rate_years = list(range(min(recon_years), max(max(recon_years), 2027) + 1))
     else:
         rate_years = list(range(cfg.first_year, 2028))
+    # Historical (already-set) roll years — those set before the bonds are dated
+    # (roll year < delivery year) plus any entered in the certified inputs table —
+    # get a blue font; projected-forward rates stay in the normal font.
+    hist_cut = max([cfg.delivery.year - 1, *(cfg.historical_av or {})])
     for j, y in enumerate(rate_years):
         fill = _GRAY if j % 2 else _WHITE
-        _cell(ws, r, 1, y, fill, _BODY, fmt="0", align=_C)
-        _cell(ws, r, 2, cfg.lot_inventory_ratio(y), fill, _BODY, fmt="0.000%")
-        _cell(ws, r, 3, cfg.residential_assessment_rate(y + 1), fill, _BODY, fmt="0.000%")
+        rfont = _CERTFONT if y <= hist_cut else _BODY
+        _cell(ws, r, 1, y, fill, rfont, fmt="0", align=_C)
+        _cell(ws, r, 2, cfg.lot_inventory_ratio(y), fill, rfont, fmt="0.000%")
+        _cell(ws, r, 3, cfg.residential_assessment_rate(y + 1), fill, rfont, fmt="0.000%")
         r += 1
 
     ws.freeze_panes = "A4"
