@@ -88,7 +88,7 @@ _SPECS: list[tuple] = [
     ("Funds", "Surplus Fund Target Factor", "SURPLUS_FUND_TARGET_FACTOR", "surplus_fund_target_factor", "float", "x max senior DS"),
 
     ("Taxable Value Timing", "AV Lag (years)", "AV_LAG_YEARS", "av_lag_years", "int", ""),
-    ("Taxable Value Timing", "Strict Biennial Level-of-Value", "STRICT_BIENNIAL_AV", "hold_value_flat", "yesno", "TRUE/FALSE"),
+    ("Taxable Value Timing", "Strict Biennial Level-of-Value", "HOLD_VALUE_FLAT", "hold_value_flat", "yesno", "TRUE/FALSE"),
 
     ("Stress Testing", "Home Sales Pace (% of forecast)", "ABSORPTION_PACE_FACTOR", "absorption_pace_factor", "pct", "100% = base; 50% halves the monthly pace"),
 
@@ -96,10 +96,10 @@ _SPECS: list[tuple] = [
     ("Tax & Valuation", "Inflation Start Year", "INFLATION_START_YEAR", "inflation_start_year", "int", "home-price inflation begins this year; flat (not deflated) before"),
     ("Tax & Valuation", "Inflation Rate (home prices)", "INFLATION_RATE", "inflation_rate", "pct", ""),
     ("Tax & Valuation", "Inflation Rate (commercial sales)", "INFLATION_RATE_COMM_SALES", "inflation_rate_comm_sales", "pct", ""),
-    ("Tax & Valuation", "Reassessment - Residential", "REASSESS_RATE", "reassess_rate", "pct", ""),
+    ("Tax & Valuation", "Reassessment - Residential", "REASSESS_RATE", "reassess_rate", "pct", "applied annually in Utah"),
     ("Tax & Valuation", "Reassessment - Commercial", "REASSESS_COMM_RATE", "reassess_comm_rate", "pct", ""),
-    ("Tax & Valuation", "Primary Residential Taxable Ratio", "RESID_TAXABLE_RATIO", "resid_taxable_ratio", "pct", ""),
-    ("Tax & Valuation", "Prior Residential Taxable Ratio", "RESID_TAXABLE_RATIO_PRIOR", "resid_taxable_ratio_prior", "pct", "residential taxable ratio when the governing document was adopted"),
+    ("Tax & Valuation", "Primary Residential Taxable Ratio", "RESID_TAXABLE_RATIO", "resid_taxable_ratio", "pct", "55% — the 45% exemption, § 59-2-103"),
+    ("Tax & Valuation", "Prior Residential Taxable Ratio", "RESID_TAXABLE_RATIO_PRIOR", "resid_taxable_ratio_prior", "pct", "ratio before the current exemption"),
     ("Tax & Valuation", "Mill Levy Tax Collection %", "TAX_COLLECT_MILL_PRC", "tax_collect_mill_prc", "pct", ""),
     ("Tax & Valuation", "Personal Property Uniform Fee %", "UNIFORM_FEE_PRC", "uniform_fee_prc", "pct", "§ 59-2-405; % of mill revenue"),
     ("Tax & Valuation", "Uniform Fee Taxable Value Threshold", "UNIFORM_FEE_AV_THRESHOLD", "uniform_fee_av_threshold", "float", "$"),
@@ -111,17 +111,17 @@ _SPECS: list[tuple] = [
     ("Mill Levies", "Mill Levy - Commercial", "MILL_LEVY_COMM", "mill_levy_comm", "float", "mills"),
     ("Mill Levies", "Mill Levy Target - Operations", "MILL_LEVY_OPS_TARGET", "mill_levy_ops_target", "float", "mills"),
 
-    ("Lot / Home Valuation", "Builder Lot Inventory Taxable Ratio", "LOT_INVENTORY_TAXABLE_RATIO", "lot_inventory_taxable_ratio", "pct", ""),
+    ("Lot / Home Ratios", "Builder Lot Inventory Taxable Ratio", "LOT_INVENTORY_TAXABLE_RATIO", "lot_inventory_taxable_ratio", "pct", "55% under Utah Admin. Code R884-24P-52; 100% to tax at full market"),
     ("Lot / Home Valuation", "Platted Lot Value (% of ASP)", "PLATTED_LOT_VALUE", "platted_lot_value", "pct", "lot value = ASP × this (default 10%)"),
     ("Lot / Home Valuation", "Platted Commercial Lot Value", "PLATTED_COMM_LOT_VALUE", "platted_comm_lot_value", "pct", ""),
 
-    ("Centrally Assessed / Commercial", "Centrally Assessed Property (market value)", "CENTRALLY_ASSESSED_VALUE", "centrally_assessed_value", "float", "$ actual"),
-    ("Centrally Assessed / Commercial", "Centrally Assessed Equipment (market value)", "CENTRALLY_ASSESSED_EQUIPMENT", "centrally_assessed_equipment", "float", "$ actual"),
+    ("Centrally Assessed / Commercial", "Centrally Assessed Property (market value)", "CENTRALLY_ASSESSED_VALUE", "centrally_assessed_value", "float", "$ market — § 59-2-201"),
+    ("Centrally Assessed / Commercial", "Centrally Assessed Equipment (market value)", "CENTRALLY_ASSESSED_EQUIPMENT", "centrally_assessed_equipment", "float", "$ market"),
     ("Centrally Assessed / Commercial", "Centrally Assessed Taxable Ratio", "CENTRALLY_ASSESSED_RATIO", "centrally_assessed_ratio", "pct", "market value × ratio"),
     ("Centrally Assessed / Commercial", "Include Centrally Assessed in Taxed Value", "CENTRALLY_ASSESSED", "centrally_assessed", "yesno", "Yes/No"),
     ("Centrally Assessed / Commercial", "Commercial Taxable Ratio", "COMMERCIAL_ASSESSMENT_RATIO", "commercial_assessment_ratio", "pct", ""),
     ("Centrally Assessed / Commercial", "Commercial AV Lag (years)", "COMM_ASSESSMENT_LAG_YEARS", "comm_assessment_lag_years", "int", ""),
-    ("Centrally Assessed / Commercial", "Include Commercial in Taxed Value", "COMM_NEW_VALUE_ADD", "comm_new_value_add", "yesno", "Yes/No"),
+    ("Centrally Assessed / Commercial", "Include Commercial in Taxed AV", "COMM_NEW_VALUE_ADD", "comm_new_value_add", "yesno", "Yes/No"),
 
     ("District Costs", "Annual District Administration", "ADMIN_COST", "admin_cost", "float", "$ per year, charged against pledged revenue"),
     ("District Costs", "District Administration Growth Rate", "ADMIN_GROWTH_RATE", "admin_growth_rate", "pct", "annual inflation on the administration base"),
@@ -334,7 +334,7 @@ def write_inputs_workbook(
     # "Call Schedule" tab in the model output workbook, not an input.)
 
     # ── Historical Residential Exemption rates (reference — always the last tab) ─────────────
-    _write_tabor_history_sheet(wb.create_sheet("Utah Property Tax Reference"))
+    _write_reference_sheet(wb.create_sheet("Utah Property Tax Reference"))
 
     out_dir = os.path.dirname(output_path)
     if out_dir:
@@ -525,13 +525,11 @@ def _write_debt_structure_sheet(ws, cfg: ModelConfig):
     ws.freeze_panes = "B4"
 
 
-# ── Utah property tax reference tables ───────────────────────────────────────
-# Primary residential taxable ratio by tax year, plus the builder lot inventory
-# ratio the model applies to finished-lot value.  The first table informs
-# RESID_TAXABLE_RATIO / RESID_TAXABLE_RATIO_PRIOR and is read-only; the second is
-# read back by the model so a user can retune it in Excel.
+# ── Historical Residential Exemption (Colorado residential assessment) rates — reference ─────
+# Residential taxable ratio by tax year / reassessment cycle.  Used to inform
+# RESID_TAXABLE_RATIO and RESID_TAXABLE_RATIO_PRIOR; this is a read-only reference table.
 from .config import RESIDENTIAL_EXEMPTION_HISTORY as _RATE_HISTORY
-from .config import BUILDER_INVENTORY_HISTORY as _VACANT_LAND_HISTORY
+from .config import BUILDER_INVENTORY_HISTORY as _INVENTORY_HISTORY
 _RATE_SOURCES = [
     "Utah Const. art. XIII, § 3 — residential exemption, maximum 45% of fair market value",
     "Utah Code § 59-2-103 — primary residential exemption (45%); one acre of land per unit",
@@ -581,7 +579,7 @@ def _write_rate_table(ws, start_row, title, subtitle, rate_hdr, history,
 
 
 # Marker text used to locate the editable lot-inventory rate table on read-back.
-_VACANT_TABLE_TITLE = "Colorado Vacant-Land / Nonresidential Taxable Ratios"
+_INVENTORY_TABLE_TITLE = "Utah Builder Lot Inventory Taxable Ratios"
 
 
 def _load_vacant_land_schedule(wb) -> dict | None:
@@ -597,7 +595,7 @@ def _load_vacant_land_schedule(wb) -> dict | None:
     start = None
     for row in ws.iter_rows(min_col=2, max_col=2):
         v = row[0].value
-        if isinstance(v, str) and v.strip() == _VACANT_TABLE_TITLE:
+        if isinstance(v, str) and v.strip() == _INVENTORY_TABLE_TITLE:
             start = row[0].row
             break
     if start is None:
@@ -621,7 +619,7 @@ def _load_vacant_land_schedule(wb) -> dict | None:
     return sched or None
 
 
-def _write_tabor_history_sheet(ws):
+def _write_reference_sheet(ws):
     ws.column_dimensions["A"].width = 2
     ws.column_dimensions["B"].width = 18
     ws.column_dimensions["C"].width = 26
@@ -639,7 +637,7 @@ def _write_tabor_history_sheet(ws):
     r += 2
     r = _write_rate_table(
         ws, r,
-        _VACANT_TABLE_TITLE,
+        _INVENTORY_TABLE_TITLE,
         ("EDITABLE — Utah taxes non-exempt property at 100% of fair market value, but "
          "Utah Admin. Code R884-24P-52 lets the primary residential exemption reach "
          "unoccupied property and property under construction that the assessor determines "
@@ -647,7 +645,7 @@ def _write_tabor_history_sheet(ws):
          "at the same 55%. The model READS these yellow rate cells and applies them to "
          "lot-inventory value by roll year (carry-forward past the last row). Enter 100% "
          "to tax inventory at full market value instead."),
-        "Lot Inventory Taxable Ratio", _VACANT_LAND_HISTORY, editable=True)
+        "Lot Inventory Taxable Ratio", _INVENTORY_HISTORY, editable=True)
 
     # ── Utah property tax calendar ───────────────────────────────────────────
     r += 2
@@ -662,10 +660,9 @@ def _write_tabor_history_sheet(ws):
         "district principal falls on the following 1 March.")
     sc0.font = _NOTE; sc0.alignment = _C
     r += 2
-    for col, lbl in [(2, "Date"), (3, "Event"), (4, "")]:
-        if lbl:
-            c = ws.cell(row=r, column=col, value=lbl)
-            c.fill = _HDRF; c.font = _HDRFONT; c.border = _BORDER; c.alignment = _C
+    for col, lbl in [(2, "Date"), (3, "Event")]:
+        c = ws.cell(row=r, column=col, value=lbl)
+        c.fill = _HDRF; c.font = _HDRFONT; c.border = _BORDER; c.alignment = _C
     r += 1
     for when, what in UTAH_TAX_CALENDAR:
         dc = ws.cell(row=r, column=2, value=when)

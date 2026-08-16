@@ -74,6 +74,36 @@ Utah change is what feeds it — pledged revenue net of district administration,
 which a Utah PID pays out of the debt service levy rather than a separate
 operations levy.
 
+## Staying in sync with Colorado
+
+This model is a **port** of `co_metro_model`, not a fork. `tools/port_from_colorado.py`
+regenerates the package from a Colorado checkout in one command:
+
+```bash
+python tools/port_from_colorado.py --source ../CO-Metro-District-Model --check   # dry run
+python tools/port_from_colorado.py --source ../CO-Metro-District-Model           # apply
+python -m pytest tests -q                                                        # re-verify
+```
+
+The port runs three passes — identifier renames, display-label substitutions,
+and semantic patches where Utah law changes the arithmetic or the prose. **Every
+patch is checked**: if Colorado refactors the code a patch anchors to, the port
+fails and writes nothing, rather than quietly emitting a Colorado-flavoured Utah
+model. `tests/test_model.py::test_port_is_up_to_date_with_colorado` fails when
+the Colorado checkout has moved ahead.
+
+Two upstream fixes ride in the patch set and are worth pushing back to
+`co_metro_model`:
+
+* `SubordinateLien.size_par` rounds the solved par to the **nearest** $1,000,
+  which can land above the largest par the residual cashflow actually retires —
+  the base case then reports "fully repaid: False" by a few thousand dollars.
+  The port rounds down.
+* `SummaryModel.build` loops collection years to `dev.last_year` (2067) while
+  the value builds stop at the senior final maturity, so the Summary tail shows
+  a decade of zero taxable value and fee-only negative revenue. The port bounds
+  the loop to the builds. No effect on sizing.
+
 ## Layout
 
 ```
@@ -94,6 +124,7 @@ ut_pid_model/
   memo.py            # Tierra-style reimbursement memo (HTML)
 main.py                        # console run + exports
 build_notebook.py              # regenerates the notebook
+tools/port_from_colorado.py    # re-port from co_metro_model
 ut_pid_model_notebook.ipynb    # narrated walkthrough with charts & scenarios
 tests/test_model.py            # statute + reference-deal regression tests
 docs/utah-vs-colorado.md       # the statutory walk-through
@@ -133,10 +164,19 @@ Deliverables land in a **`reimbursement analysis`** folder beside the inputs
 workbook:
 
 * `ut_pid_model_output.xlsx` — model view. Tabs: **Summary - Light**,
-  **Summary - Detail**, **Development Projections**, Sources & Uses – First,
-  Senior Lien DS – First, Subordinate Lien, Senior Surplus Fund, CAPI Fund –
-  First, O&M Revenue, Sources & Uses – Refunding, Senior Lien DS – Refunding,
-  Senior Lien Coverage, Call Schedule, **Notes**.
+  **Summary - Detail**, **Builder Lot Inventory Value**, **Residential Value**,
+  **Development Projections**, Sources & Uses – First, Senior Lien DS – First,
+  Subordinate Lien, Senior Surplus Fund, CAPI Fund – First, O&M Revenue,
+  Sources & Uses – Refunding, Senior Lien DS – Refunding, Senior Lien Coverage,
+  Call Schedule, **Notes**.
+
+  The two **value tabs** are the single source of taxable value: the lot
+  inventory build (value of new lots → less lots rolled into homes → net with
+  lag → adjustments → cumulative → taxable ratio → taxable value) and the
+  residential build (beginning market value → value added to the rolls →
+  annual reassessment → adjustments → gross market value → taxable value).
+  The Summary tabs and the bond sizing read from them, so the presentation and
+  the arithmetic cannot disagree.
 * `ut_pid_forecast_exhibits.xlsx` — CPA-style forecast exhibits for the base case
   and two development stress scenarios:
   * **Exhibit A** — Base Case (100% of forecast absorption pace)
@@ -172,12 +212,14 @@ released debt-service-reserve fund as a balloon.
 | Net pledged revenue, 2028 roll | $375,746 | $375,625 | — |
 | Senior final maturity | 3/1/2054 | 3/1/2054 | 3/1/2054 |
 | DSRF | $490,000 | $545,055 | — |
-| Subordinate par | $1,606,000 (sized) | $1,000,000 (typed) | $1,000,000 |
+| Subordinate par | $1,653,000 (sized) | $1,000,000 (typed) | $1,000,000 |
 
 Taxable value ties **to the dollar** from the 2031 roll onward. Through
-build-out the model runs 0.2–0.4% high because lot inventory is carried at the
+build-out the model runs within 0.2% because lot inventory is carried at the
 **inflated** ASP (the current Colorado methodology) where the 2024 workbook used
-a flat base ASP. The DSRF differs because the 3-prong test here rounds to $5,000
+a flat base ASP. The first roll (2024) sits ~18% under the workbook — the value
+build recognises the opening lot inventory differently — but it backs $388 of
+revenue in a year with no debt service, so it is tracked rather than chased. The DSRF differs because the 3-prong test here rounds to $5,000
 and excludes the final maturity year from the max-DS prong. The subordinate par
 differs because the model **sizes** the largest par the residual cashflow
 retires in full, where the workbook carries a hand-typed round number.

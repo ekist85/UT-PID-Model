@@ -267,7 +267,39 @@ Colorado name names a Colorado mechanism:
 | `VACANT_LAND_HISTORY` | `BUILDER_INVENTORY_HISTORY` | R884-24P-52 treatment |
 | `strict_biennial_av` | `hold_value_flat` | retained as an option, off for Utah |
 
-Everything else — `debt_service.py`, `subordinate.py`, `sources_uses.py`,
-`refunding.py`, `pricing.py`, `scenarios.py` — is the Colorado engine unchanged,
-because the sizing, waterfall, call provisions and refunding mechanics are the
-same in both states.
+Everything else — `debt_service.py`, `sources_uses.py`, `refunding.py`,
+`pricing.py`, `scenarios.py` — is the Colorado engine unchanged, because the
+sizing, waterfall, call provisions and refunding mechanics are the same in both
+states.
+
+The port is mechanical: `tools/port_from_colorado.py` regenerates every module
+from a Colorado checkout, applying the renames in this table, the display-label
+substitutions, and the semantic patches above. Every patch is checked, so a
+Colorado refactor that invalidates one fails the port instead of silently
+leaving Colorado behaviour in a Utah model.
+
+---
+
+## 13. What rides in the port beyond the renames
+
+Two upstream defects are fixed in the patch set and should go back to
+`co_metro_model`:
+
+* **`SubordinateLien.size_par` rounds to the nearest $1,000.** The bisection
+  solves the largest par the residual cashflow retires, then rounds — and
+  rounding up lands above it, so the base case reports the note as not fully
+  repaid by a few thousand dollars. The port rounds down.
+* **`SummaryModel.build` runs past the value builds.** The loop ends at
+  `dev.last_year` (2067) while the value builds stop at the senior final
+  maturity, so the Summary carries a decade of zero taxable value and fee-only
+  negative revenue. The port bounds the loop to the builds. Nothing is sized
+  past final maturity, so there is no numerical effect — only a projection that
+  stops where the projection stops.
+
+One Colorado change needed a Utah-specific adjustment rather than a straight
+port: `residential_assessment_rate` now falls back to the historical rate table
+for the roll year instead of the flat config ratio, which is right for Colorado
+(the ratio moves every cycle) but would make the Inputs-page
+`RESID_TAXABLE_RATIO` cell inert in Utah, where the ratio has been flat at 55%
+since 1995. The Utah version honours an explicitly-changed input first, then
+falls back to the table.

@@ -1,15 +1,14 @@
 """
-memo.py — Generate a Tierra-style reimbursement-analysis memo (HTML) for a Utah
-public infrastructure district financing, populated from the model outputs.
+memo.py — Generate a Tierra-style reimbursement-analysis memo (HTML) for a
+Utah Public Infrastructure District financing, populated from the model outputs.
 
-Mirrors the Texas MUD, Arizona CFD and Colorado metro district reimbursement
-memos in look and structure (right-floated absorption table, assumption bullets,
-bond/reimbursement table, sources & uses), but states Utah assumptions — the
-levy caps under the Public Infrastructure District Act, the 45% primary
-residential exemption, annual reassessment, the 30 November tax due date,
-capitalized interest, the 3-prong DSRF, the subordinate cash-flow note and the
-senior refunding — and pulls the bond program, development schedule and
-reimbursement figures from the model objects.
+Mirrors the Texas MUD and Arizona CFD reimbursement memos in look and structure
+(right-floated absorption table, assumption bullets, bond/reimbursement table,
+sources & uses), but states Colorado assumptions — mill levy (governing document cap +
+Gallagher adjustment), primary residential / lot-inventory taxable ratios, the
+reassessment on odd years, capitalized interest, the 3-prong DSRF, the
+subordinate cash-flow note and the senior refunding — and pulls the bond program,
+development schedule and reimbursement figures from the model objects.
 """
 
 from __future__ import annotations
@@ -126,17 +125,17 @@ def build_memo_html(cfg, sm, senior, su, sub=None, refunding=None, dev=None,
     eff_mill = cfg.effective_ds_mill_levy
 
 
-    from .config import PID_STATUTORY_LEVY_CAP
-    statutory_mills = PID_STATUTORY_LEVY_CAP * 1000.0
-
-    # Builder lot inventory taxable ratio by roll year; show the range applied
-    # over roll years that actually carry inventory.
+    # Lot-inventory / nonresidential taxable ratio phases by roll year
+    # (SB24-233); show the range applied over roll years that carry lot-inventory
+    # value (so an early 29% year with no lots doesn't widen the range).
     _vl = sorted({cfg.lot_inventory_ratio(y)
                   for y in range(cfg.first_year, cfg.senior_final_year)
                   if dev.vacant_lot_market_value(y) > 0})
     _vl_txt = (f"{_vl[0]:.1%}" if len(_vl) == 1
                else f"{_vl[0]:.1%}&ndash;{_vl[-1]:.1%}") if _vl else f"{cfg.lot_inventory_taxable_ratio:.1%}"
 
+    from .config import PID_STATUTORY_LEVY_CAP
+    statutory_mills = PID_STATUTORY_LEVY_CAP * 1000.0
     _mill_bullet = (
         f"A district levy of {mill_total:.3f} mills is assumed &mdash; {mill_ds:.3f} mills for "
         f"debt service"

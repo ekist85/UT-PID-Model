@@ -198,8 +198,8 @@ def _build_a3(ws, cfg, dev, sm, prefix="A", scenario_label=""):
         (1, "Collection\nYear", 11),
         (2, f"Cumulative Market\nValue of Homes\n(Exhibit {prefix}-4)", 18),
         (3, f"Annual\nReassessment\n{cfg.reassess_rate:.0%}", 13),
-        (4, "Assessment\nRatio\n(Varies)" if cfg.residential_assessment_schedule
-            else f"Assessment\nRatio (Utah)\n{cfg.resid_taxable_ratio:.2%}", 13),
+        (4, "Taxable\nRatio\n(Varies)" if cfg.residential_assessment_schedule
+            else f"Taxable\nRatio (Utah)\n{cfg.resid_taxable_ratio:.2%}", 13),
         (5, "Residential\nTaxable Value", 16),
     ])
     r = hr + 1
@@ -222,7 +222,7 @@ def _build_a4(ws, cfg, dev, prefix="A", scenario_label=""):
     hr = _exhibit_header(ws, f"{prefix}-4", cfg,
                          "Schedule of Estimated Market Value - Residential Development", 6, scenario_label)
     _col_headers(ws, hr, [
-        (1, "Construction /\nRoll Year", 12),
+        (1, "Construction/\nRoll Year", 12),
         (2, "Homes\nClosed", 10),
         (3, "Avg. Selling\nPrice (ASP)", 13),
         (4, "Annual Value\nof New Homes", 15),

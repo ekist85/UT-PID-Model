@@ -17,20 +17,19 @@ workbook.
 This notebook walks through the full financing:
 
 1. **Inputs / assumptions** (`ModelConfig`)
-2. **Development & taxable value** — lot deliveries, home closings, the 45%
-   primary residential exemption, annual reassessment
-3. **Pledged revenue** — mill levy + personal property uniform fee, net of fees
+2. **Development & taxable value** — lot deliveries, home closings, Residential Exemption
+   taxable ratio, reassessment
+3. **Pledged revenue** — mill levy + specific-ownership tax, net of fees
 4. **Senior new-money bonds** — sized by *revenue-wrap* at a target coverage
 5. **Sources & Uses + reimbursement** to the developer
 6. **Subordinate cash-flow lien**
 7. **Refunding** — *refinancing the senior new-money bonds* to generate
    additional reimbursement ("new money")
 
-> A Utah PID taxes primary residential property on **55% of fair market value**
-> (the 45% exemption, Utah Code § 59-2-103), revalued **annually**, and pledges a
-> mill levy capped at the most restrictive of 15.000 mills (§ 17D-4-303), the
-> governing document, and the indentures — layered into senior and subordinate
-> liens.""")
+> Utah PIDs assess property at a primary residential ratio
+> (6.7%), reassessed on a two-year cycle, and debt is pledged a mill levy
+> (capped by the governing document) plus specific-ownership tax, layered into senior
+> and subordinate liens.""")
 
 code("""import pandas as pd
 from ut_pid_model import (
@@ -84,21 +83,21 @@ print(f"Delivery:           {cfg.delivery}  |  Refunding delivery: {cfg.delivery
 
 md("""## 2. Development & taxable value
 
-**Utah taxable-value lag.** Utah county assessors revalue **annually**
-(§ 59-2-303.1). Value is set as of **1 January**, appears on that year's roll,
-and the taxes are due **30 November of the same year** — funding the following
-**1 March** debt service payment. So value created during calendar year *V*
-lands on the roll for *V+1*, is collected in *V+1*, and pays debt service in
-*V+2*: a **two-year lag** from creation to the payment it supports
-(`cfg.av_lag_years = 2`), applied in `summary.py`.
+**Colorado assessed-value lag.** Colorado reassesses real property on a
+**two-year cycle** (in odd-numbered re-valuation years; even years are
+intervening years where value carries over). Value is set as of the **June-30
+appraisal date in the year before** the reappraisal year, held flat across the
+two-year cycle, and the resulting taxes are collected the *following* year. The
+net effect is that the taxable value backing a given collection year's
+mill-levy revenue reflects market value from roughly **two years earlier**
+(`cfg.av_lag_years = 2`), and steps up only every other year. By default the
+model applies the reassessment step-up on **odd years** (configurable
+via `cfg.reassess_on_even_years`). The model applies this lag in `summary.py`.
 
-Colorado reaches the same two-year lag by a different route — a June-30 level of
-value the year before a biennial reappraisal, collected the year *after* the
-roll. Same number of years, different mechanism, and different behaviour in
-between: Utah has no two-year hold, so the base steps up every year.
-
-> Sources: Utah Code §§ 59-2-303.1 (annual update), 59-2-1331 (taxes due
-> 30 November), 59-2-103 (45% primary residential exemption).""")
+> Sources:
+> [Adams County Assessor — Property Assessment Process](https://adamscountyco.gov/our-county/elected-officials/assessor/property-assessment-process/),
+> [Larimer County — Understanding Property Values](https://www.larimer.gov/assessor/understanding-property-values),
+> [Eagle County — Assessment Process](https://www.eaglecounty.us/departments___services/assessor/assessment_process.php).""")
 code("""# 'dev' was loaded from the Excel Development Inputs sheet in section 0
 print(f"Total lots: {sum(round(c) for c in dev.home_closings.values())}")
 print("Home closings:", {y: round(c) for y, c in dev.home_closings.items()})
@@ -132,14 +131,16 @@ pd.DataFrame([{
     "homes_closed": int(round(sum(p.home_closings.values()))),
 } for p in prods])""")
 
-md("""### Taxable ratios and the Colorado cadence
+md("""### Statutory level-of-value option (SB 24-233 time-varying rates)
 
-Utah's 45% exemption has been stable since 1995, so the taxable ratios are
-normally flat — but the schedules exist so a change can be phased in without
-touching the engine, and `REASSESS_FREQUENCY` can be set to `Biennial` to run
-Colorado's two-year cadence for comparison. The table below reflects the
-**loaded `cfg`**: the value-set year and the taxable ratios actually in
-effect.""")
+By default the model layers in new development value each year on a 2-year lag
+(the practitioner-workbook convention it is validated against). It can also run
+the strict **Colorado statutory** treatment: the taxable value is **held flat
+across the two-year reassessment cycle**, and the residential / lot-inventory
+**taxable ratios vary by year** per SB 24-233 / HB 24B-1001. These are
+controlled from the inputs page (`HOLD_VALUE_FLAT`, the residential taxable ratio, and the
+assessment-rate schedules), so the table below reflects the **loaded `cfg`** —
+the value-set year and the taxable ratios actually in effect.""")
 code("""# Reflects the loaded config: AV source year (lag / biennial hold) and the
 # taxable ratios in force for each collection year.
 y0 = cfg.first_collection_year

@@ -20,7 +20,7 @@ from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.drawing.image import Image as _XLImage
 
-from .config import ModelConfig
+from .config import ModelConfig, residential_taxable_ratio_for
 
 _LOGO_PATH = os.path.join(os.path.dirname(__file__), "assets", "tierra_logo.png")
 
@@ -177,6 +177,8 @@ _HDR_FONT    = Font(name="Calibri", bold=True, color="1F4E79", size=9)
 _BODY        = Font(name="Calibri", size=9)
 _BOLD        = Font(name="Calibri", bold=True, size=9)
 _TOTAL_FONT  = Font(name="Calibri", bold=True, color="1F4E79", size=9)
+_RATE_FONT   = Font(name="Calibri", italic=True, size=7, color="808080")  # taxable ratios
+_RATEFMT     = "0.000%"
 
 _CENTER = Alignment(horizontal="center", vertical="center", wrap_text=True)
 _RIGHT  = Alignment(horizontal="right", vertical="center")
@@ -262,7 +264,7 @@ def _build_residential_av_sheet(ws, cfg, dev, sm):
       residential units → home market value (incl. reassessment) →
       cumulative home market value → home taxable value @ Taxable Ratio; → Total Residential Taxable Value.
     Values are shown in the year the AV is created; the model collects it on the
-    Utah taxable-value lag (see Notes).
+    Colorado lag (see Notes).
     """
     M = dev.cumulative_home_market_value
     closings = dev.home_closings
@@ -344,367 +346,148 @@ def _build_summary_light_sheet(ws, cfg, sm, dev, senior, refunding_bond=None):
     total taxable value, gross & net revenue, senior net debt service and
     coverage.  These are the '=' subtotals from the detailed Summary bridge.
     """
-    from .debt_service import senior_coverage_schedule
-    cov = {r["year"]: r for r in senior_coverage_schedule(cfg, sm, senior, refunding_bond)}
+    vac = {r["collection"]: r for r in dev.lot_inventory_value_build(cfg)}
+    res = {r["collection"]: r for r in dev.residential_value_build(cfg)}
     _title(ws, [cfg.pid_name, _county_line(cfg, " — Summary (Light)"),
-                "Headline totals per year — ending market value, total taxable value, "
-                "gross & net revenue, and senior net debt service"], 7)
-    hdrs = [(1, "Assessment\nRoll Year", 11), (2, "Tax Collection\nYear", 12),
-            (3, "Ending\nMarket Value", 16), (4, "Total\nTaxable Value", 16),
-            (5, "Gross\nRevenue", 14), (6, "Net Revenue\n(senior sizing)", 15),
-            (7, "Senior\nNet DS", 14)]
-    for c, l, w in hdrs:
-        _hdr(ws, 5, c, l, w)
+                "Aggregate per year — beginning & ending market value for builder lot inventory, "
+                "residential and state assessed → total taxable value → gross & net "
+                "revenue for sizing.  Flows from the Builder Lot Inventory Value / Residential "
+                "Value tabs."], 11)
+    band = PatternFill("solid", fgColor="1F4E79")
+    groups = [("", ["Assessment\nRoll Year", "Tax Collection\nYear"]),
+              ("VACANT LAND — MARKET", ["Beginning", "Ending"]),
+              ("RESIDENTIAL — MARKET", ["Beginning", "Ending"]),
+              ("", ["State\nAssessed", "Total\nTaxable Value", "Gross\nRevenue",
+                    "Net Revenue\n(senior sizing)"])]
+    widths = [11, 12, 15, 15, 15, 15, 12, 16, 14, 15]
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    c = 1
+    for gname, subs in groups:
+        if gname:
+            ws.merge_cells(start_row=4, start_column=c, end_row=4, end_column=c + len(subs) - 1)
+            gc = ws.cell(row=4, column=c, value=gname)
+            gc.fill = band; gc.font = Font(name="Calibri", bold=True, color="FFFFFF", size=9)
+            gc.alignment = _CENTER
+            for cc in range(c, c + len(subs)):
+                ws.cell(row=4, column=cc).fill = band
+        for k, sub in enumerate(subs):
+            _hdr(ws, 5, c + k, sub, widths[c + k - 1])
+        c += len(subs)
     for i, r in enumerate(sm.rows):
         y = r.collection_year
-        src = cfg.av_source_year(y)   # value on the roll = level of value
         rw = 6 + i
         fill = _GRAY if i % 2 else _WHITE
-        for c in range(1, 8):
+        vb, rb = vac.get(y, {}), res.get(y, {})
+        vb_prev, rb_prev = vac.get(y - 1, {}), res.get(y - 1, {})
+        for c in range(1, 11):
             ws.cell(row=rw, column=c).fill = fill
             ws.cell(row=rw, column=c).border = _BORDER
-        end_mv = dev.vacant_lot_market_value(src) + dev.cumulative_home_market_value.get(src, 0.0)
-        _cell(ws, rw, 1, y - 1, fill, align=_CENTER)   # roll year = collection − 1
-        _cell(ws, rw, 2, y, fill, align=_CENTER)       # collection year
-        _cell(ws, rw, 3, round(end_mv) or None, fill, fmt=_DOLLAR)
-        _cell(ws, rw, 4, round(r.total_av) or None, fill, _BOLD, fmt=_DOLLAR)
-        _cell(ws, rw, 5, round(r.mill_revenue + r.uniform_fee_revenue) or None, fill, fmt=_DOLLAR)
-        _cell(ws, rw, 6, round(r.net_senior_revenue) or None, fill, _BOLD, fmt=_DOLLAR)
-        cr = cov.get(y)
-        if cr:
-            _cell(ws, rw, 7, round(cr["senior_net_ds"]) or None, fill, fmt=_DOLLAR)
+        _cell(ws, rw, 1, y - 1, fill, align=_CENTER)
+        _cell(ws, rw, 2, y, fill, align=_CENTER)
+        _cell(ws, rw, 3, round(vb_prev.get("cumulative", 0.0)) or None, fill, fmt=_DOLLAR)
+        _cell(ws, rw, 4, round(vb.get("cumulative", 0.0)) or None, fill, fmt=_DOLLAR)
+        _cell(ws, rw, 5, round(rb.get("beginning", 0.0)) or None, fill, fmt=_DOLLAR)
+        _cell(ws, rw, 6, round(rb.get("gross", 0.0)) or None, fill, fmt=_DOLLAR)
+        _cell(ws, rw, 7, round(r.state_av) or None, fill, fmt=_DOLLAR)
+        _cell(ws, rw, 8, round(r.total_av) or None, fill, _BOLD, fmt=_DOLLAR)
+        _cell(ws, rw, 9, round(r.mill_revenue + r.uniform_fee_revenue) or None, fill, fmt=_DOLLAR)
+        _cell(ws, rw, 10, round(r.net_senior_revenue) or None, fill, _BOLD, fmt=_DOLLAR)
     ws.freeze_panes = "C6"
 
 
 def _build_summary_av_sheet(ws, cfg, dev, sm):
     """
-    Master Summary: residential, commercial, centrally assessed, and state-taxable value
-    builds (commercial / centrally assessed / state hidden when zero), totaling to an
-    aggregate Total Taxable Value, with mill-levy revenue and uniform-fee columns.
-    (Debt service, coverage and surplus live on their own dedicated tabs.)
+    Summary — Detail: assessed-value components (vacant lot, home, centrally assessed /
+    commercial when present, state assessed, exempt) → Total Taxable Value →
+    revenue waterfall (mill levy + Uniform Fee − fees) → net revenue for senior sizing.
+
+    Assessed values flow from the "Builder Lot Inventory Value" / "Residential Value" tabs
+    (single source); the market-value build and the certified true-up / amortization
+    live on those tabs, so this sheet stays a clean reconciliation to Total Taxable Value.
     """
-    M = dev.cumulative_home_market_value
-    Cm = getattr(dev, "cumulative_commercial_market_value", {})
-    closings = dev.home_closings
     has_comm = sm.has_commercial
     has_og = sm.has_centrally_assessed
-    has_state = sm.has_state_assessed
-    lot_rate = cfg.lot_inventory_taxable_ratio
-    tabor = cfg.resid_taxable_ratio
-    NCOL = 13
-    for c in range(1, NCOL + 1):
-        ws.column_dimensions[get_column_letter(c)].width = 14 if c > 1 else 11
+    _vl = sorted({cfg.lot_inventory_taxable_rate(r.collection_year) for r in sm.rows})
+    _vl_lbl = (f"{_vl[0]:.1%}–{_vl[-1]:.1%}" if len(_vl) > 1 else (f"{_vl[0]:.1%}" if _vl else ""))
+    _rr = sorted({cfg.residential_assessment_rate(r.collection_year) for r in sm.rows})
+    _rr_lbl = (f"{_rr[0]:.3%}–{_rr[-1]:.3%}" if len(_rr) > 1 else (f"{_rr[0]:.3%}" if _rr else ""))
 
-    # Run a contiguous block of years from the first development activity through
-    # the senior bonds' final maturity (e.g. 2054).  Assessed value and revenue
-    # are carried forward every year — homes keep their value after build-out —
-    # so the table never stops early at the end of construction.
-    horizon_end = cfg.senior_final_year
-    active = [s for s in range(cfg.first_year, horizon_end + 1)
-              if (M.get(s, 0) > 0 or dev.lot_market_value.get(s, 0) > 0
-                  or dev.lot_deliveries.get(s, 0) > 0 or Cm.get(s, 0) > 0)]
-    start = min(active) if active else cfg.first_year
-    years = list(range(start, horizon_end + 1))
-
-    # ── Precompute per-year taxable values for each class ───────────────────
-    cum_units = 0
-    res_av_by_year, comm_av_by_year, units_by_year = {}, {}, {}
-    res_detail = {}   # s -> (lots, lot_mv, lot_av, home_added, cum_home, home_av)
-    comm_detail = {}  # s -> (added, cum, cav)
-    for s in years:
-        # Lot-inventory inventory (lots delivered less those built out into homes),
-        # so lots and the homes later built on them are never double-counted.
-        vacant_lots = dev.vacant_lot_units(s)
-        lot_mv = dev.vacant_lot_market_value(s)
-        # Assessed value uses the statutory level-of-value source year (tax-roll
-        # lag + biennial hold), identical to the pledged-revenue engine
-        # (SummaryModel.av_source_year), so AV/revenue/coverage match exactly.
-        src = cfg.av_source_year(s)
-        lot_av = dev.vacant_lot_market_value(src) * cfg.lot_inventory_taxable_rate(s)
-        cum_units += int(round(closings.get(s, 0)))
-        units_by_year[s] = cum_units
-        cum_home = M.get(s, 0.0)
-        new_home = dev.new_home_market_value(s)                  # closings × inflated ASP
-        reassess = (cum_home - M.get(s - 1, 0.0)) - new_home     # reassessment (even years)
-        home_av = M.get(src, 0.0) * cfg.residential_assessment_rate(s)
-        res_av_by_year[s] = lot_av + home_av
-        res_detail[s] = (vacant_lots, lot_mv, lot_av,
-                         new_home, reassess, cum_home, home_av)
-        csrc = s - cfg.comm_assessment_lag_years
-        added = Cm.get(s, 0.0) - Cm.get(s - 1, 0.0)
-        cum = Cm.get(s, 0.0)
-        cav = Cm.get(csrc, 0.0) * cfg.commercial_assessment_ratio if has_comm else 0.0
-        comm_av_by_year[s] = cav
-        comm_detail[s] = (added, cum, cav)
-    og_av = cfg.centrally_assessed_av if has_og else 0.0
-    state_av = cfg.state_assessed                       # existing state-assessed (added)
-    exvac = cfg.existing_vacant_land                    # existing land value (added)
-    exres = cfg.existing_residential_value              # existing residential (added)
-    exempt = cfg.exempt_value                           # exempt value (subtracted)
-    # Certified roll (certification_date.year) is collected the following year, so
-    # the certified base + true-up anchor that collection year.
-    cert_collect_year = (cfg.certification_date.year + 1
-                         if cfg.certification_date is not None
-                         else cfg.first_collection_year)
-
-
-    # ── Value-bridge layout ─────────────────────────────────────────────────
-    # Reads left-to-right as a story each year:
-    #   (1) MARKET-VALUE BUILD — beginning market value, what is added (new lots,
-    #       new homes, reassessment), what rolls off (lots turning into homes),
-    #       and the ending market value.
-    #   (2) ASSESSED VALUE ON THE ROLL — the market value translated to assessed
-    #       value at Utah's taxable ratios (on the two-year lag), plus the
-    #       existing / state / exempt / certified-value pieces, to Total Taxable Value.
-    #   (3) REVENUE & NET REVENUE — mill levy, SOT, fees, net.
-    _biennial = cfg.reassess_frequency.strip().lower() == "biennial"
-    rate_txt = (f"@ {cfg.reassess_rate:.1%}" if not _biennial else
-                f"@ {cfg.reassess_rate:.1%} "
-                f"({'even' if cfg.reassess_on_even_years else 'odd'} rolls)")
-    # Lot-inventory-value sub-bridge and home-value sub-bridge, so the lot-value →
-    # home conversion is explicit: a lot's value rolls OFF lot-inventory value and
-    # the finished home rolls ON at full value when it closes.
-    lot_cols = [
-        ("lvbeg", "Lot Inventory Value\n(Begin)", 14),
-        ("mvlots", "+ New Lots\nDelivered", 13),
-        ("mvroll", "− Lots Rolled\ninto Homes", 14),
-        ("lvend", "Lot Inventory Value\n(End)", 14),
-    ]
-    home_cols = [
-        ("hvbeg", "Home Value\n(Begin)", 14),
-        ("mvhomes", "+ New Homes\nClosed", 13),
-        ("mvreassess", f"+ Reassessment {rate_txt}", 14),
-        ("mvcertadj", "+ Cert. Value\nMkt Adj.", 14),
-        ("hvend", "Cumulative Home\nValue (End)", 15),
-    ]
-    mv_cols = lot_cols + home_cols + [("mvend", "Total Ending\nMarket Value", 15)]
-    groups = [("RESIDENTIAL MARKET VALUE ON THE ROLL  —  LOT VALUE → HOME CONVERSION", mv_cols)]
-    if has_comm:
-        groups.append(("COMMERCIAL", [
-            ("commadd", "+ Comm Value\nAdded", 13),
-            ("commcum", "Cumulative Comm\nMarket Value", 15),
-            ("commav", f"Commercial Taxable Value\n@ {cfg.commercial_assessment_ratio:.2%}", 13)]))
-    # Lot-inventory taxable ratio can vary by roll year,
-    # so label the column with the range of rates actually applied — limited to
-    # years that carry lot-inventory value — rather than a single flat figure.
-    _vl_rates = sorted({cfg.lot_inventory_taxable_rate(s) for s in years
-                        if dev.vacant_lot_market_value(cfg.av_source_year(s)) > 0})
-    _vl_lbl = (f"{_vl_rates[0]:.1%}" if len(_vl_rates) == 1
-               else f"{_vl_rates[0]:.1%}–{_vl_rates[-1]:.1%}") if _vl_rates else f"{lot_rate:.1%}"
-    av_cols = [
-        ("lotav", f"Lot Inventory\nTaxable Value\n@ {_vl_lbl}", 13),
-        ("homeav", f"Home Taxable Value\n@ {tabor:.3%}", 13),
-    ]
+    cols = [("lotav", f"Lot Inventory\nTaxable Value\n@ {_vl_lbl}", 14),
+            ("homeav", f"Home Taxable Value\n@ {_rr_lbl}", 14)]
     if has_og:
-        av_cols.append(("ogav", "+ Centrally Assessed\nTaxable Value", 12))
-    av_cols += [
-        ("exvac", "+ Existing\nLand Value", 13),
-        ("exres", "+ Existing\nResidential", 13),
-        ("stateav", "+ State\nAssessed", 12),
-        ("exempt", "− Exempt", 11),
-        ("adjust", "Cert. Value\nAdjustment", 13),
-        ("total", "Total\nTaxable Value", 15),
-    ]
-    groups.append(("TAXABLE VALUE ON THE ROLL", av_cols))
-    rev_cols = [
-        ("mill", f"Mill-Levy Rev\n@ {cfg.effective_ds_mill_levy:.3f} / {cfg.tax_collect_mill_prc:.1%}", 14),
-        ("sot", f"Uniform\nFee\n@ {cfg.uniform_fee_prc:.0%}", 10),
-        ("gross", "Gross\nRevenue", 12),
-        ("treas", f"− County Collection\n@ {cfg.county_collection_fee:.2%}", 12),
-        ("trust", f"− Senior\nTrustee", 11),
-        ("subtrust", "− Sub\nTrustee", 11),
-        ("om", "− District\nAdmin", 11),
-        ("net", "Net Revenue\n(senior sizing)", 14),
-    ]
-    groups.append(("REVENUE & NET REVENUE", rev_cols))
+        cols.append(("ogav", "+ Centrally Assessed\nTaxable Value", 12))
+    if has_comm:
+        cols.append(("commav", "+ Commercial\nTaxable Value", 13))
+    cols += [("stateav", "+ State\nAssessed", 12), ("exempt", "− Exempt", 11),
+             ("total", "Total\nTaxable Value", 16),
+             ("mill", f"Mill-Levy Rev\n@ {cfg.effective_ds_mill_levy:.3f}", 14),
+             ("sot", f"Uniform\nFee\n@ {cfg.uniform_fee_prc:.0%}", 10),
+             ("gross", "Gross\nRevenue", 13),
+             ("treas", f"− County Collection\n@ {cfg.county_collection_fee:.2%}", 13),
+             ("trust", "− Senior\nTrustee", 11),
+             ("subtrust", "− Sub\nTrustee", 11),
+             ("om", "− District\nAdmin", 11),
+             ("net", "Net Revenue\n(senior sizing)", 15)]
 
-    # Assign columns: 1 = Roll Year, 2 = Tax Revenue Year, then each group across.
-    pos = {}
-    c = 3
-    for _, gcols in groups:
-        for key, _, w in gcols:
-            pos[key] = c
-            ws.column_dimensions[get_column_letter(c)].width = w
-            c += 1
-    last_col = c - 1
     ws.column_dimensions["A"].width = 10
     ws.column_dimensions["B"].width = 10
+    pos = {}
+    c = 3
+    for key, _lbl, w in cols:
+        pos[key] = c
+        ws.column_dimensions[get_column_letter(c)].width = w
+        c += 1
+    last_col = c - 1
 
-    _title(ws, [cfg.pid_name, _county_line(cfg, " — Summary"),
-                "Value bridge, one row per year:  the value ON the assessment roll — market-"
-                "value build (beginning → + lots delivered → + homes closed → + reassessment → "
-                "− lots rolled into homes → ending)  →  taxable value  →  revenue.  Roll value "
-                "reflects the June-30 level of value the year before the roll; taxes are "
-                "collected the year after the roll."],
-           last_col)
+    _title(ws, [cfg.pid_name, _county_line(cfg, " — Summary (Detail)"),
+                "Taxable-value components → total taxable value → revenue waterfall → "
+                "net revenue for sizing.  Lot-inventory and home taxable value flow from "
+                "the Builder Lot Inventory Value / Residential Value tabs."], last_col)
 
-    # Row 5: group banners (merged over each group's columns).
-    band = PatternFill("solid", fgColor="1F4E79")
-    ws.merge_cells(start_row=5, start_column=1, end_row=6, end_column=1)
-    yc = ws.cell(row=5, column=1, value="Assessment\nRoll Year")
-    yc.fill = _LIGHT; yc.font = _HDR_FONT; yc.alignment = _CENTER; yc.border = _BORDER
-    ws.merge_cells(start_row=5, start_column=2, end_row=6, end_column=2)
-    tc = ws.cell(row=5, column=2, value="Tax Collection\nYear")
-    tc.fill = _LIGHT; tc.font = _HDR_FONT; tc.alignment = _CENTER; tc.border = _BORDER
-    for gname, gcols in groups:
-        first = pos[gcols[0][0]]; last = pos[gcols[-1][0]]
-        ws.merge_cells(start_row=5, start_column=first, end_row=5, end_column=last)
-        gc = ws.cell(row=5, column=first, value=gname)
-        gc.fill = band; gc.font = Font(name="Calibri", bold=True, color="FFFFFF", size=9)
-        gc.alignment = _CENTER
-        for cc in range(first, last + 1):
-            ws.cell(row=5, column=cc).fill = band
-    # Row 6: column headers.
-    for _, gcols in groups:
-        for key, hdr, _w in gcols:
-            cell = ws.cell(row=6, column=pos[key], value=hdr)
-            cell.fill = _HILITE if key in ("mvcertadj", "exvac", "exres") else _LIGHT
-            cell.font = _HDR_FONT; cell.alignment = _CENTER; cell.border = _BORDER
+    for r_, lbl in ((1, "Assessment\nRoll Year"), (2, "Tax Collection\nYear")):
+        cell = ws.cell(row=5, column=r_, value=lbl)
+        cell.fill = _LIGHT; cell.font = _HDR_FONT; cell.alignment = _CENTER; cell.border = _BORDER
+        ws.merge_cells(start_row=5, start_column=r_, end_row=6, end_column=r_)
+    for key, lbl, _w in cols:
+        cell = ws.cell(row=5, column=pos[key], value=lbl)
+        cell.fill = _LIGHT; cell.font = _HDR_FONT; cell.alignment = _CENTER; cell.border = _BORDER
+        ws.merge_cells(start_row=5, start_column=pos[key], end_row=6, end_column=pos[key])
 
-    bold_keys = {"lvend", "hvend", "mvend", "commav", "total", "net"}
-    existing_adj = dev.existing_value_adjustments(cfg)   # roll-year credit/amort
-    rr = 7
-    for i, s in enumerate(years):
+    # Certified/trued-up years, whose Lot Inventory\nTaxable Value / Home AV came straight from the
+    # Inputs template (historical certified values + existing values) — highlighted.
+    vac_cert = {r["collection"] for r in dev.lot_inventory_value_build(cfg) if r.get("certified")}
+    res_cert = {r["collection"] for r in dev.residential_value_build(cfg) if r.get("certified")}
+
+    bold_keys = {"total", "gross", "net"}
+    for i, r in enumerate(sm.rows):
+        rw = 7 + i
+        y = r.collection_year
         fill = _GRAY if i % 2 else _WHITE
-        for cc in range(1, last_col + 1):
-            ws.cell(row=rr, column=cc).fill = fill
-            ws.cell(row=rr, column=cc).border = _BORDER
-        lots, lot_mv, lot_av, new_home, reassess, cum_home, home_av = res_detail[s]
-        added, cum, cav = comm_detail[s]
-        res = res_av_by_year[s]
-        # ── Residential market-value bridge — value ON this roll ─────────────
-        # The value on the roll for collection year s is the June-30 level of
-        # value from ``src`` (= s − av_lag), so the market-value build is shown at
-        # ``src`` to line up with the taxable value.  A home closing in year Y
-        # therefore appears on the (Y+1) roll — the same row as its taxable value.
-        src = cfg.av_source_year(s)
-        mb_lot_mv = dev.vacant_lot_market_value(src)                 # ending lot-inventory MV
-        mb_new_home = dev.new_home_market_value(src)
-        mb_cum_home = dev.cumulative_home_market_value.get(src, 0.0)
-        mb_cum_home_prev = dev.cumulative_home_market_value.get(src - 1, 0.0)
-        mb_vac_prev = dev.vacant_lot_market_value(src - 1)
-        mb_lot_delivered = dev.lot_market_value.get(src, 0.0)
-        mb_reassess = mb_cum_home - mb_cum_home_prev - mb_new_home
-        # Certified-value market adjustment: in the level-of-value year that backs
-        # the certified roll, the cumulative home value is grossed up from the
-        # certified existing-residential taxable value (taxable-value gross-up).  Break
-        # that one-time step out of the biennial-reassessment column so each shows
-        # its own driver (the bridge still ties: reassess + cert-adj = total step).
-        mv_cert_adj = 0.0
-        if (getattr(dev, "cert_mv_adjustment_year", None) is not None
-                and src == dev.cert_mv_adjustment_year):
-            mv_cert_adj = dev.cert_mv_adjustment
-        mb_reassess -= mv_cert_adj
-        lots_to_homes = mb_vac_prev + mb_lot_delivered - mb_lot_mv   # value rolling off
-        mvbeg = mb_vac_prev + mb_cum_home_prev
-        mvend = mb_lot_mv + mb_cum_home
-        # Existing builder lot inventory and existing residential value are ONE-TIME
-        # certified amounts counted only in the first collection year (then
-        # highlighted, not dragged down).  State assessed is added and the
-        # exempt value subtracted every year (both held flat).
-        # Historical certified-value true-up: a roll year (s − 1) entered in the
-        # Inputs side table is the actual certified roll — override the DS-taxable
-        # categories with the entered figures (blank = $0) and skip the greenfield
-        # existing/certified plugs.  These cells are highlighted.
-        hist_row = (cfg.historical_av or {}).get(s - 1)
-        is_hist = hist_row is not None
-        state_av_used = state_av
-        exempt_used = exempt
-        if is_hist:
-            is_first = False
-            lot_av = hist_row.get("vacant_land") or 0.0
-            home_av = hist_row.get("residential") or 0.0
-            state_av_used = hist_row.get("state_assessed") or 0.0
-            exempt_used = hist_row.get("exempt") or 0.0
-            res = lot_av + home_av
-            # Gross the trued-up ASSESSED values back up to MARKET value using the
-            # same taxable ratios the model applies (assessed ÷ rate), and show
-            # them in the Existing Land Value / Existing Residential columns.
-            _vr = cfg.lot_inventory_taxable_rate(s)
-            _rr = cfg.residential_assessment_rate(s)
-            exvac_y = (lot_av / _vr) if _vr else 0.0
-            exres_y = (home_av / _rr) if _rr else 0.0
-            ds_taxable = res + og_av + state_av_used - exempt_used
-            total = ds_taxable + cav
-            adjust = 0.0
-        else:
-            is_first = (s == cert_collect_year)
-            exvac_y = exvac if is_first else 0.0
-            exres_y = exres if is_first else 0.0
-            ds_taxable = res + og_av + state_av_used + exvac_y + exres_y - exempt_used
-            total = ds_taxable + cav
-            # Certified-value true-up: in the certification year, plug Total Taxable Value to
-            # the county-certified value from the Inputs page; the difference (+/-)
-            # adjusts the DS-taxable base so revenue is levied on the certified roll.
-            adjust = 0.0
-            if cfg.certification_date is not None and s == cert_collect_year:
-                adjust = cfg.current_certified_value - total
-                ds_taxable += adjust
-                total = ds_taxable + cav
-        # Existing-value credit / amortization (roll year = s − 1): positive credit
-        # in the entry year, negative amortization thereafter.  Flows into the
-        # DS-taxable base and is surfaced in the adjustments column.
-        existing_credit = existing_adj.get(s - 1, 0.0)
-        if existing_credit:
-            ds_taxable += existing_credit
-            total = ds_taxable + cav
-            adjust += existing_credit
-        mill_rev = (ds_taxable / 1000.0 * cfg.effective_ds_mill_levy * cfg.tax_collect_mill_prc
-                    + cav / 1000.0 * cfg.commercial_mill_levy * cfg.tax_collect_mill_prc)
-        sot = (mill_rev * (cfg.uniform_fee_prc / 2)
-               if total < cfg.uniform_fee_av_threshold
-               else mill_rev * cfg.uniform_fee_prc)
-        gross = mill_rev + sot
-        treasurer = -mill_rev * cfg.county_collection_fee
-        # District costs come from the same helper the revenue engine uses, so
-        # the report and the sizing can never disagree.
-        _admin, _trustee, _subtrustee = cfg.district_costs(s)
-        trustee = -_trustee
-        subtrustee = -_subtrustee
+        treas = -r.mill_revenue * cfg.county_collection_fee
+        # District costs come from the same helper the revenue engine uses,
+        # so the report and the sizing can never disagree.
+        _admin, _trustee, _subtrustee = cfg.district_costs(r.collection_year)
+        trust = -_trustee
+        subtrust = -_subtrustee
         om = -_admin
-        # Net revenue for SENIOR sizing nets only the senior fees; the sub trustee
-        # fee is a subordinate-lien cost (applied to the sub lien's revenue), shown
-        # here for visibility but not deducted from the senior net.
-        net = gross + treasurer + trustee + om
         vals = {
-            # Market-value bridge (value on this roll) — lot & home sub-bridges
-            "lvbeg": round(mb_vac_prev) or None, "mvlots": round(mb_lot_delivered) or None,
-            "mvroll": (round(-lots_to_homes) or None), "lvend": round(mb_lot_mv) or None,
-            "hvbeg": round(mb_cum_home_prev) or None, "mvhomes": round(mb_new_home) or None,
-            "mvreassess": round(mb_reassess) or None, "mvcertadj": round(mv_cert_adj) or None,
-            "hvend": round(mb_cum_home) or None,
-            "mvend": round(mvend) or None,
-            # Assessed value on the roll
-            "exvac": round(exvac_y) or None, "exres": round(exres_y) or None,
-            "lotav": round(lot_av) or None,
-            "homeav": round(home_av) or None, "resav": round(res) or None,
-            "commadd": round(added) or None, "commcum": round(cum) or None,
-            "commav": round(cav) or None, "ogav": round(og_av) or None,
-            "exempt": (round(-exempt_used) or None), "stateav": round(state_av_used) or None,
-            "adjust": round(adjust) or None,
-            "total": round(total) or None,
-            "mill": round(mill_rev) or None, "sot": round(sot) or None,
-            "gross": round(gross) or None, "treas": round(treasurer) or None,
-            "trust": round(trustee) or None, "subtrust": round(subtrustee) or None,
-            "om": round(om) or None,
-            "net": round(net) or None,
+            "lotav": r.lot_av, "homeav": r.residential_av, "ogav": r.centrally_assessed_av,
+            "commav": r.commercial_av, "stateav": r.state_av, "exempt": -cfg.exempt_value,
+            "total": r.total_av, "mill": r.mill_revenue, "sot": r.uniform_fee_revenue,
+            "gross": r.mill_revenue + r.uniform_fee_revenue, "treas": treas,
+            "trust": trust, "subtrust": subtrust, "om": om, "net": r.net_senior_revenue,
         }
-        _cell(ws, rr, 1, s - 1, fill, align=_CENTER)   # assessment roll year (= collection − 1)
-        _cell(ws, rr, 2, s, fill, align=_CENTER)       # tax collection year
+        _cell(ws, rw, 1, r.collection_year - 1, fill, align=_CENTER)
+        _cell(ws, rw, 2, r.collection_year, fill, align=_CENTER)
+        cert_row = y in vac_cert or y in res_cert
         for key, col in pos.items():
-            fmt = _NUM if key in ("lots", "units") else _DOLLAR
             font = _BOLD if key in bold_keys else _BODY
-            # Highlight the one-time certified pieces: existing vacant/residential
-            # (first collection year), the certified-value market adjustment, and
-            # the historical certified-value true-up cells (entered actual roll).
-            hi = (key in ("exvac", "exres") and is_first) or \
-                 (key == "mvcertadj" and vals.get("mvcertadj") is not None) or \
-                 (is_hist and key in ("lotav", "homeav", "stateav", "exempt", "total",
-                                      "exvac", "exres")) or \
-                 (key in ("adjust", "total") and existing_credit)
+            # Highlight the taxable values / total that came from the certified inputs.
+            hi = (key == "lotav" and y in vac_cert) or (key == "homeav" and y in res_cert) \
+                or (key == "total" and cert_row)
             cell_fill = _HILITE if hi else fill
-            _cell(ws, rr, col, vals.get(key), cell_fill, font, fmt=fmt)
-        rr += 1
+            _cell(ws, rw, col, round(vals.get(key, 0.0)) or None, cell_fill, font, fmt=_DOLLAR)
     ws.freeze_panes = "C7"
 
 
@@ -1292,10 +1075,12 @@ def _build_sub_sheet(ws, cfg, sub_result):
 # ── Senior surplus fund sheet ─────────────────────────────────────────────────
 def _build_surplus_sheet(ws, cfg, surplus_fund):
     _title(ws, [cfg.pid_name, "Senior Surplus / Debt-Service-Reserve Fund",
-                f"Target ${surplus_fund.target:,.0f}  (excess flows to subordinate lien)"], 6)
-    hdrs = [(1, "Year", 8), (2, "Senior\nResidual", 15), (3, "Deposit to\nReserve", 14),
-            (4, "Reserve\nBalance", 14), (5, "Excess to\nSub Lien", 14),
-            (6, "Reserve\nRelease", 14)]
+                f"Target ${surplus_fund.target:,.0f}  ·  earns {cfg.interest_earn_rate:.2%} "
+                f"on balance  (excess flows to subordinate lien)"], 7)
+    hdrs = [(1, "Year", 8), (2, "Senior\nResidual", 15),
+            (3, f"Interest\nEarned @ {cfg.interest_earn_rate:.2%}", 14),
+            (4, "Deposit to\nReserve", 14), (5, "Reserve\nBalance", 14),
+            (6, "Excess to\nSub Lien", 14), (7, "Reserve\nRelease", 14)]
     for col, lbl, w in hdrs:
         _hdr(ws, 5, col, lbl, w)
     for i, r in enumerate(surplus_fund.rows):
@@ -1303,11 +1088,74 @@ def _build_surplus_sheet(ws, cfg, surplus_fund):
         fill = _GRAY if i % 2 else _WHITE
         _cell(ws, rw, 1, r.year, fill, align=_CENTER)
         _cell(ws, rw, 2, round(r.senior_residual, 0) or None, fill, fmt=_DOLLAR)
-        _cell(ws, rw, 3, round(r.deposit_to_reserve, 0) or None, fill, fmt=_DOLLAR)
-        _cell(ws, rw, 4, round(r.reserve_balance, 0) or None, fill, fmt=_DOLLAR)
-        _cell(ws, rw, 5, round(r.excess_to_sub, 0) or None, fill, fmt=_DOLLAR)
-        _cell(ws, rw, 6, round(r.reserve_release, 0) or None, fill, fmt=_DOLLAR)
+        _cell(ws, rw, 3, round(r.interest_earned, 0) or None, fill, fmt=_DOLLAR)
+        _cell(ws, rw, 4, round(r.deposit_to_reserve, 0) or None, fill, fmt=_DOLLAR)
+        _cell(ws, rw, 5, round(r.reserve_balance, 0) or None, fill, fmt=_DOLLAR)
+        _cell(ws, rw, 6, round(r.excess_to_sub, 0) or None, fill, fmt=_DOLLAR)
+        _cell(ws, rw, 7, round(r.reserve_release, 0) or None, fill, fmt=_DOLLAR)
     ws.freeze_panes = "A6"
+
+
+# ── Lot-inventory value build (Wells-Fargo-style presentation) ──────────────────
+def _build_lot_inventory_value_sheet(ws, cfg, dev):
+    rows = dev.lot_inventory_value_build(cfg)
+    _title(ws, [cfg.pid_name, "Builder Lot Inventory Value — Residential",
+                "Value of new lots → less lots rolled into homes → net (lagged) → "
+                "certified-value adjustments → cumulative 100% lot value → assessed."], 10)
+    hdrs = [(1, "Roll", 9), (2, "Collection\nYear", 10),
+            (3, "Value of\nNew Lots", 14), (4, "− Lots to\nHomes", 14),
+            (5, "Net Value\nwith Lag", 14), (6, "Adjustments", 14),
+            (7, "Cumulative\nFinished Lot Value", 16), (8, "100% Lot\nValue", 15),
+            (9, "Taxable\nRatio", 11), (10, "Taxable\nValue of Lots", 15)]
+    for col, lbl, w in hdrs:
+        _hdr(ws, 5, col, lbl, w)
+    for i, r in enumerate(rows):
+        rw = 6 + i
+        fill = _GRAY if i % 2 else _WHITE
+        hi = _HILITE if r["adjustment"] else fill
+        _cell(ws, rw, 1, r["av_set"], fill, align=_CENTER)
+        _cell(ws, rw, 2, r["collection"], fill, align=_CENTER)
+        _cell(ws, rw, 3, round(r["new_lots"]) or None, fill, fmt=_DOLLAR)
+        _cell(ws, rw, 4, round(r["lots_to_homes"]) or None, fill, fmt=_DOLLAR)
+        _cell(ws, rw, 5, round(r["net"]) or None, fill, fmt=_DOLLAR)
+        _cell(ws, rw, 6, round(r["adjustment"]) or None, hi, fmt=_DOLLAR)
+        _cell(ws, rw, 7, round(r["cumulative"]) or None, fill, _BOLD, fmt=_DOLLAR)
+        _cell(ws, rw, 8, round(r["cumulative"]) or None, fill, fmt=_DOLLAR)
+        _cell(ws, rw, 9, r["ratio"], fill, fmt=_RATEFMT)
+        _cell(ws, rw, 10, round(r["assessed"]) or None, fill, _BOLD, fmt=_DOLLAR)
+    ws.freeze_panes = "C6"
+    return {r["collection"]: r["assessed"] for r in rows}
+
+
+# ── Residential value build (Wells-Fargo-style presentation) ──────────────────
+def _build_residential_value_sheet(ws, cfg, dev):
+    rows = dev.residential_value_build(cfg)
+    _title(ws, [cfg.pid_name, "Residential Value — Projected Taxable Value",
+                "Beginning market value → + new home value added to rolls → + biennial "
+                "reassessment → + certified-value adjustments → gross market value → assessed."], 10)
+    hdrs = [(1, "Roll", 9), (2, "Tax Rev\nYear", 10),
+            (3, "Beginning\nMarket Value", 15), (4, "New Market\nValue Added", 15),
+            (5, "Mkt Value\nAdded to Rolls", 15), (6, "Annual\nReassessment", 14),
+            (7, "Adjustments", 14), (8, "Gross Market\nValue", 16),
+            (9, "Taxable\nRatio", 11), (10, "Taxable\nValue", 15)]
+    for col, lbl, w in hdrs:
+        _hdr(ws, 5, col, lbl, w)
+    for i, r in enumerate(rows):
+        rw = 6 + i
+        fill = _GRAY if i % 2 else _WHITE
+        hi = _HILITE if r["adjustment"] else fill
+        _cell(ws, rw, 1, r["av_set"], fill, align=_CENTER)
+        _cell(ws, rw, 2, r["collection"], fill, align=_CENTER)
+        _cell(ws, rw, 3, round(r["beginning"]) or None, fill, fmt=_DOLLAR)
+        _cell(ws, rw, 4, round(r["new_added"]) or None, fill, fmt=_DOLLAR)
+        _cell(ws, rw, 5, round(r["added_to_rolls"]) or None, fill, fmt=_DOLLAR)
+        _cell(ws, rw, 6, round(r["reassess"]) or None, fill, fmt=_DOLLAR)
+        _cell(ws, rw, 7, round(r["adjustment"]) or None, hi, fmt=_DOLLAR)
+        _cell(ws, rw, 8, round(r["gross"]) or None, fill, _BOLD, fmt=_DOLLAR)
+        _cell(ws, rw, 9, r["ratio"], fill, fmt=_RATEFMT)
+        _cell(ws, rw, 10, round(r["assessed"]) or None, fill, _BOLD, fmt=_DOLLAR)
+    ws.freeze_panes = "C6"
+    return {r["collection"]: r["assessed"] for r in rows}
 
 
 # ── Senior lien annual debt-service coverage ──────────────────────────────────
@@ -1405,6 +1253,8 @@ def build_excel_report(
             ws, cfg, sm, dev, senior,
             refunding_result.refunding_bond if refunding_result is not None else None)
         _build_summary_av_sheet(wb.create_sheet("Summary - Detail"), cfg, dev, sm)
+        _build_lot_inventory_value_sheet(wb.create_sheet("Builder Lot Inventory Value"), cfg, dev)
+        _build_residential_value_sheet(wb.create_sheet("Residential Value"), cfg, dev)
         from .residential_report import build_residential_sheet
         build_residential_sheet(wb.create_sheet("Development Projections"), cfg, dev, sm)
     else:
@@ -1450,7 +1300,8 @@ def build_excel_report(
     # order. Tabs not listed (Senior Lien Coverage, Notes) follow at the end,
     # with Notes always last.
     desired = [
-        "Summary - Light", "Summary - Detail", "Summary", "Development Projections",
+        "Summary - Light", "Summary - Detail", "Builder Lot Inventory Value",
+        "Residential Value", "Summary", "Development Projections",
         "Sources & Uses - First", "Senior Lien DS - First",
         "Subordinate Lien", "Senior Surplus Fund", "CAPI Fund - First", "O&M Revenue",
         "Sources & Uses - Refunding", "Senior Lien DS - Refunding",
@@ -1571,7 +1422,7 @@ def _build_notes_sheet(ws, cfg, senior, sub_result=None, refunding_result=None):
     rows = [
         ("SECTION", "Taxable Value & Revenue", ""),
         ("note", "Primary residential taxable ratio", _pct(cfg.resid_taxable_ratio)),
-        ("note", "Assessed-value lag", f"{cfg.av_lag_years} years"
+        ("note", "Taxable-value lag", f"{cfg.av_lag_years} years"
             + (" (two-year level-of-value hold)" if cfg.hold_value_flat else "")),
         ("note", "Biennial reassessment (residential / commercial)",
             f"{_pct(cfg.reassess_rate)} / {_pct(cfg.reassess_comm_rate)}"),

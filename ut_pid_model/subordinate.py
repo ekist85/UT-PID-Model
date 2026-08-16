@@ -27,6 +27,7 @@ Structure modeled
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -43,6 +44,7 @@ from .debt_service import BondTranche
 class SurplusFundRow:
     year: int
     senior_residual: float       # BU = net senior revenue - senior net DS
+    interest_earned: float       # earnings on the beginning surplus-fund balance
     deposit_to_reserve: float    # contribution into the surplus fund this year
     reserve_balance: float       # BZ = funded surplus fund balance (<= target)
     excess_to_sub: float         # BY = cash above target available to sub lien
@@ -109,13 +111,19 @@ class SurplusFund:
             residual = self.sm.net_senior_revenue(y) - sr_ds
 
             prev_balance = balance
+            # Interest earned on the beginning surplus-fund balance (rate from the
+            # Inputs page).  Earnings are cash into the fund alongside the senior
+            # residual: they build the reserve toward target and, once the fund is
+            # full, spill out as excess to the subordinate lien.
+            interest = prev_balance * cfg.interest_earn_rate
+            cash_in = residual + interest
             # Build the reserve toward target; cash beyond the target spills out.
             target_room = max(0.0, target - prev_balance)
-            if residual >= 0:
-                deposit = min(residual, target_room)
-                excess = residual - deposit
+            if cash_in >= 0:
+                deposit = min(cash_in, target_room)
+                excess = cash_in - deposit
             else:
-                deposit = max(residual, -prev_balance)  # draw down (never below 0)
+                deposit = max(cash_in, -prev_balance)  # draw down (never below 0)
                 excess = 0.0
             balance = prev_balance + deposit
 
@@ -127,7 +135,8 @@ class SurplusFund:
                 balance = 0.0
 
             row = SurplusFundRow(
-                year=y, senior_residual=residual, deposit_to_reserve=deposit,
+                year=y, senior_residual=residual, interest_earned=interest,
+                deposit_to_reserve=deposit,
                 reserve_balance=balance, excess_to_sub=excess, reserve_release=release,
             )
             self.rows.append(row)
@@ -158,6 +167,7 @@ class SurplusFund:
         return pd.DataFrame([{
             "year": r.year,
             "senior_residual": r.senior_residual,
+            "interest_earned": r.interest_earned,
             "deposit_to_reserve": r.deposit_to_reserve,
             "reserve_balance": r.reserve_balance,
             "excess_to_sub": r.excess_to_sub,
@@ -324,14 +334,17 @@ class SubordinateLien:
 
         lo, hi = 0.0, max_par
         if repaid(hi):
-            return round(hi / 1000.0) * 1000.0
+            return math.floor(hi / 1000.0) * 1000.0
         for _ in range(40):
             mid = (lo + hi) / 2.0
             if repaid(mid):
                 lo = mid
             else:
                 hi = mid
-        return round(lo / 1000.0) * 1000.0
+        # Round DOWN: rounding to the nearest $1,000 can land above the largest
+        # par the residual surplus retires, which would leave the note short at
+        # final maturity.
+        return math.floor(lo / 1000.0) * 1000.0
 
     def to_dataframe(self, result: SubLienResult) -> pd.DataFrame:
         return pd.DataFrame(result.rows)

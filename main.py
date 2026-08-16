@@ -1,5 +1,6 @@
 """
-main.py — Entry point for the Utah Public Infrastructure District financial model.
+main.py — Entry point for the Utah Public Infrastructure District financial model
+           (UCA 17D-4).
 
 Run:
     python main.py

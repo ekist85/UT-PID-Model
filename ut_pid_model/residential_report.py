@@ -369,12 +369,10 @@ def build_residential_sheet(ws, cfg, dev, sm):
             pc = ws.cell(row=r, column=1, value=txt)
             pc.font = Font(bold=True, size=8, color="9C0006"); pc.alignment = _L
 
-    # ── Lot-inventory taxable ratio applied ───────────────────────────────────
+    # ── Lot-inventory taxable ratio applied (SB24-233 phase-down) ─────────────
     # Utah has no separate lot-inventory class: what matters is whether the
     # primary residential exemption reaches builder-held inventory (Utah Admin.
     # Code R884-24P-52 says it can).  Show the ratio the model applies to
-    # lot value by roll year (see the "Utah Property Tax Reference" reference tab),
-    # with the residential ratio alongside for comparison (held flat at input).
     RATE_LAST = 3
     r += 2
     ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=RATE_LAST)
@@ -384,9 +382,9 @@ def build_residential_sheet(ws, cfg, dev, sm):
     ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=RATE_LAST)
     note = ws.cell(row=r, column=1, value=(
         "Utah taxes non-exempt property at 100% of fair market value; builder lot inventory "
-        "carries the 45% primary residential exemption where the assessor determines the property "
-        "will be a primary residence once occupied (Utah Admin. Code R884-24P-52), so it is taxed "
-        "at the same 55%. Source: the Utah Property Tax Reference tab."))
+        "carries the 45% primary residential exemption where the assessor determines the "
+        "property will be a primary residence once occupied (Utah Admin. Code R884-24P-52), "
+        "so it is taxed at the same 55%. Source: the Utah Property Tax Reference tab."))
     note.font = Font(italic=True, size=8, color="595959"); note.alignment = _L
     ws.row_dimensions[r].height = 24
     r += 1

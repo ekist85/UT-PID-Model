@@ -207,65 +207,184 @@ class DeveloperProjections:
         remaining = max(cum_units - cum_closed, 0.0)
         return remaining * (cum_value / cum_units)
 
-    def existing_value_adjustments(self, cfg) -> dict:
+    def lot_inventory_value_build(self, cfg) -> list:
         """
-        Existing-value true-up credit and its amortization, keyed by ROLL year.
+        Wells Fargo-style lot-inventory value build — one row per AV-set (roll) year.
 
-        For each roll year entered in the Inputs historical table:
-          * Vacant land credit  = (entered vacant AV / vacant rate)  −  the
-            development-page "lot value to homes" for that year.
-          * Residential credit  = cumulative home market value  −  (entered
-            residential AV / residential rate)  −  home value added.
-        Both credits are recognised (positive) in the entry roll year so the deal
-        gets credit for the initial land/home value, then amortised back out
-        (equal negatives) so it is not double-counted as lots become homes:
-          * vacant   → the year after the last lot delivery through build-out;
-          * residential → one year after the vacant window (build-out + 1).
+        Columns: Value of New Lots (lot value rolling into homes), − Lots to Homes
+        (prior year, the lag), Net Value with Lag, Adjustments (recognition that
+        plugs the running Cumulative up to the trued-up 100% lot value in a cert
+        year, then amortized), Cumulative Finished / 100% Lot Value, Assessment
+        Ratio, Taxable Value (= 100% lot value × ratio).
         """
+        first, horizon_end = cfg.first_year, cfg.senior_final_year
+
+        def l2h(y):
+            return (self.vacant_lot_market_value(y - 1) + self.lot_market_value.get(y, 0.0)
+                    - self.vacant_lot_market_value(y))
+
+        entries = self.existing_value_entries(cfg)
+        trued = {}
+        for R, h in entries.items():
+            v = h.get("vacant_land")
+            rate = cfg.lot_inventory_taxable_rate(R + 1)
+            if v and rate:
+                trued[R] = v / rate
+
+        # The FIRST historical year is the baseline — its certified value is taken
+        # as-is (its adjustment CELL stays 0).  The amount that lifts the running
+        # cumulative to each trued-up value (including the first-year baseline "extra")
+        # is amortized so the cumulative clears to $0 once the lots are built out.
+        first_trued = min(trued) if trued else None
+        total_recognition = 0.0
+        cum = 0.0
+        for y in range(first, (max(trued) + 1) if trued else first):
+            net = l2h(y) - l2h(y - 1)
+            if y in trued:
+                total_recognition += trued[y] - (cum + net)   # amortized to clear to $0
+                cum = trued[y]
+            else:
+                cum += net
+
+        # Amortization window: skip the FINAL lot-delivery year (lots are still being
+        # delivered/converted then), start the year after it, and run through one year
+        # past the last non-zero "Net Value with Lag" (the lot-to-home conversion tail).
+        lot_delivery_years = [y for y, u in self.lot_deliveries.items() if u]
+        net_years = [y for y in range(first, horizon_end + 1)
+                     if abs(l2h(y) - l2h(y - 1)) > 1e-6]
+        amort_win = (list(range(max(lot_delivery_years) + 1, max(net_years) + 2))
+                     if lot_delivery_years and net_years else [])
+        per_amort = total_recognition / len(amort_win) if amort_win else 0.0
+
+        rows, cum = [], 0.0
+        for y in range(first, horizon_end + 1):
+            new_lots = l2h(y)
+            lots_to_homes = -l2h(y - 1)
+            net = new_lots + lots_to_homes
+            adj = 0.0
+            if y == first_trued:
+                cum = trued[y]                       # baseline, no adjustment
+            elif y in trued:
+                adj = trued[y] - (cum + net)
+                cum += net + adj
+            elif y in amort_win:
+                adj = -per_amort
+                cum += net + adj
+            else:
+                cum += net + adj
+            ratio = cfg.lot_inventory_taxable_rate(y + 1)
+            rows.append({
+                "av_set": y, "collection": y + 1, "new_lots": new_lots,
+                "lots_to_homes": lots_to_homes, "net": net, "adjustment": adj,
+                "cumulative": cum, "ratio": ratio, "assessed": cum * ratio,
+                "certified": y in trued,   # taxable value came from the inputs
+            })
+        return rows
+
+    def residential_value_build(self, cfg) -> list:
+        """
+        Wells Fargo-style residential value build — one row per AV-set (roll) year.
+
+        Gross Market Value[t] = Beginning (prior Gross) + Market Value Added to Rolls
+        (prior year's new-home value) + Reassessment (prior Gross × rate in
+        re-valuation years) + Adjustments (recognition plugs Gross up to the trued-up
+        gross in the certification year — existing residential ÷ historical rate — then
+        amortizes).  Taxable Value = Gross × residential taxable ratio.
+        """
+        first, horizon_end = cfg.first_year, cfg.senior_final_year
         hist = getattr(cfg, "historical_av", None) or {}
-        if not hist:
-            return {}
-        out: dict[int, float] = {}
-        vac_sum = res_sum = 0.0
+
+        # Seed year (earliest historical residential → trued-up existing homes) and
+        # the certification-year trued-up gross (existing residential ÷ historical rate).
+        seed_year, seed_val = None, 0.0
         for R in sorted(hist):
-            h = hist[R]
-            vac = h.get("vacant_land")
-            res = h.get("residential")
-            if vac:
-                vrate = cfg.lot_inventory_taxable_rate(R + 1)
-                trued = vac / vrate if vrate else 0.0
-                base = (self.vacant_lot_market_value(R - 1)
-                        + self.lot_market_value.get(R, 0.0)
-                        - self.vacant_lot_market_value(R))
-                adj = trued - base
-                out[R] = out.get(R, 0.0) + adj
-                vac_sum += adj
-            if res:
-                rrate = cfg.residential_assessment_rate(R + 1)
-                beg = res / rrate if rrate else 0.0
-                added = self.new_home_market_value(R)
-                cum = self.cumulative_home_market_value.get(R, 0.0)
-                adj = cum - beg - added
-                out[R] = out.get(R, 0.0) + adj
-                res_sum += adj
-        lot_years = [y for y, u in self.lot_deliveries.items() if u]
-        home_years = [y for y, u in self.home_closings.items() if u]
-        if lot_years and home_years:
-            lld, lhc = max(lot_years), max(home_years)
-            # Vacant rolls off from the year after the last lot delivery through
-            # one year past build-out (last home closing); residential one year
-            # after vacant throughout.
-            vac_win = list(range(lld + 1, lhc + 2))          # e.g. 2027..2030
-            res_win = [y + 1 for y in vac_win]               # e.g. 2028..2031
-            if vac_win and abs(vac_sum) > 1e-6:
-                per = vac_sum / len(vac_win)
-                for y in vac_win:
-                    out[y] = out.get(y, 0.0) - per
-            if res_win and abs(res_sum) > 1e-6:
-                per = res_sum / len(res_win)
-                for y in res_win:
-                    out[y] = out.get(y, 0.0) - per
-        return out
+            rz, rate = hist[R].get("residential"), cfg.residential_assessment_rate(R + 1)
+            if rz and rate:
+                seed_year, seed_val = R, rz / rate
+                break
+        cert_year, cert_val = None, 0.0
+        if cfg.certification_date is not None and cfg.existing_residential_value:
+            cy = cfg.certification_date.year
+            rate = cfg.residential_assessment_rate(cy + 1)
+            if rate:
+                cert_year, cert_val = cy, cfg.existing_residential_value / rate
+
+        # The residential amortization ends ONE YEAR BEHIND the lot-inventory
+        # amortization (which ends one year past the last non-zero vacant "Net Value
+        # with Lag").  Derived from the development schedule — no hardcoded periods.
+        def _l2h(y):
+            return (self.vacant_lot_market_value(y - 1) + self.lot_market_value.get(y, 0.0)
+                    - self.vacant_lot_market_value(y))
+        net_years = [y for y in range(first, horizon_end + 1)
+                     if abs(_l2h(y) - _l2h(y - 1)) > 1e-6]
+        vac_amort_end = (max(net_years) + 1) if net_years else None   # vacant window end
+        amort_win = (list(range(cert_year + 1, vac_amort_end + 2))
+                     if cert_year is not None and vac_amort_end is not None else [])
+
+        # Utah revalues annually, so value already on the roll grows every year
+        # (§ 59-2-303.1) — suppressed in the certification year and before the
+        # first collectible roll.  With ``reassess_frequency = "Biennial"`` the
+        # step falls only on odd (or even) roll years, the Colorado cadence.
+        def reassess_on(av):
+            if av < first + 2:
+                return False
+            if cfg.certification_date is not None and av == cfg.certification_date.year:
+                return False
+            if getattr(cfg, "reassess_frequency", "Annual").strip().lower() != "biennial":
+                return True
+            return (av % 2 == 0) if getattr(cfg, "reassess_on_even_years", False) else (av % 2 == 1)
+
+        rows, gross = [], 0.0
+        total_recognition = None
+        for y in range(first, horizon_end + 1):
+            beginning = gross
+            added = self.new_home_market_value(y - 1)
+            new_added = self.new_home_market_value(y)
+            reassess = beginning * cfg.reassess_rate if reassess_on(y) else 0.0
+            adj = 0.0
+            if seed_year is not None and y == seed_year:
+                # Baseline existing-home value (first historical year, no adjustment).
+                gross = seed_val
+                ratio = cfg.residential_assessment_rate(y + 1)
+                rows.append({
+                    "av_set": y, "collection": y + 1, "beginning": beginning,
+                    "new_added": new_added, "added_to_rolls": added, "reassess": reassess,
+                    "adjustment": 0.0, "gross": gross, "ratio": ratio,
+                    "assessed": gross * ratio, "certified": True,
+                })
+                continue
+            elif y == cert_year:
+                adj = cert_val - (beginning + added + reassess)
+                total_recognition = adj
+            elif y in amort_win and total_recognition:
+                adj = -total_recognition / len(amort_win)
+            gross = beginning + added + reassess + adj
+            ratio = cfg.residential_assessment_rate(y + 1)
+            rows.append({
+                "av_set": y, "collection": y + 1, "beginning": beginning,
+                "new_added": new_added, "added_to_rolls": added, "reassess": reassess,
+                "adjustment": adj, "gross": gross, "ratio": ratio,
+                "assessed": gross * ratio, "certified": y == cert_year,
+            })
+        return rows
+
+    def existing_value_entries(self, cfg) -> dict:
+        """
+        Certified true-up entries, keyed by ROLL year → {"vacant_land", "residential"}
+        (assessed $).  Every roll year in the Inputs historical table PLUS the
+        certification year's certified-value inputs (EXISTING_VACANT_LAND for the
+        most recent year; a historical-table row for the cert year takes precedence).
+        Only VACANT land gets a cert-year entry — the certified residential value
+        seeds the cumulative home value (taxable-value gross-up), already captured as the
+        "cum" in the historical entry's residential adjustment.
+        """
+        entries: dict[int, dict] = {R: dict(h) for R, h in
+                                    (getattr(cfg, "historical_av", None) or {}).items()}
+        if cfg.certification_date is not None:
+            cy = cfg.certification_date.year
+            if cy not in entries and cfg.existing_vacant_land:
+                entries[cy] = {"vacant_land": cfg.existing_vacant_land}
+        return entries
 
     @property
     def is_per_product(self) -> bool:
@@ -276,7 +395,7 @@ class DeveloperProjections:
         """
         Roll up per-product detail (if any) into the aggregate drivers, then
         compute the cumulative home market value series (Summary column M) with
-        biennial reassessment.
+        reassessment.
         """
         self._infl = cfg.inflation_rate
         self._inflation_start_year = cfg.inflation_start_year
@@ -351,8 +470,6 @@ class DeveloperProjections:
     @staticmethod
     def _is_reassess_year(year: int, cfg) -> bool:
         """
-        Should value already on the roll be grown this year?
-
         Utah county assessors update values **annually** based on a systematic
         review of current market data (§ 59-2-303.1), with a detailed review of
         each parcel at least every five years — so the answer is normally "every
@@ -393,7 +510,7 @@ class DeveloperProjections:
 #: Product, units, base ASP, and the lot-delivery schedule priced 17 Sept 2024.
 #: Homes close the year after their finished lots are delivered.
 VIRIDIAN_FARM_PRODUCTS = [
-    ("Rear-Load Townhome",  139, 365_620.0, {2023: 0, 2024: 38, 2025: 60, 2026: 41}),
+    ("Rear-Load Townhome",  139, 365_620.0, {2024: 38, 2025: 60, 2026: 41}),
     ("Front-Load Townhome", 327, 394_910.0,
      {2024: 28, 2025: 48, 2026: 64, 2027: 96, 2028: 91}),
     ("Alley-Load Cottages",  30, 434_350.0, {2024: 24, 2025: 6}),
