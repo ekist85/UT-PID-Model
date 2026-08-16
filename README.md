@@ -92,7 +92,7 @@ fails and writes nothing, rather than quietly emitting a Colorado-flavoured Utah
 model. `tests/test_model.py::test_port_is_up_to_date_with_colorado` fails when
 the Colorado checkout has moved ahead.
 
-Two upstream fixes ride in the patch set and are worth pushing back to
+Three upstream fixes ride in the patch set and are worth pushing back to
 `co_metro_model`:
 
 * `SubordinateLien.size_par` rounds the solved par to the **nearest** $1,000,
@@ -103,6 +103,13 @@ Two upstream fixes ride in the patch set and are worth pushing back to
   the value builds stop at the senior final maturity, so the Summary tail shows
   a decade of zero taxable value and fee-only negative revenue. The port bounds
   the loop to the builds. No effect on sizing.
+* `SubordinateLien` measures the first (stub) coupon period only when the
+  payment date falls in the **same calendar year** as the dated date. That holds
+  in Colorado (dated 1 December, sub pays 15 December) but not in Utah, where a
+  September delivery's first sub payment is the following 15 March — upstream
+  charges that period a full year of interest on bonds dated less than six
+  months earlier. The port anchors the stub to the dated date itself, which
+  moves the sized sub par from $1,701,000 to $1,730,000.
 
 ## Layout
 
@@ -187,7 +194,12 @@ workbook:
   (taxable values & net tax revenue, builder lot inventory and residential
   taxable value, residential market value, senior and subordinate debt service,
   and sources & uses).
-* `ut_pid_model_memo.html` — the reimbursement memo, populated from the model.
+* `ut_pid_model_memo.html` — the reimbursement memo, populated from the model:
+  the absorption table, the Utah assumption bullets (levy cap, the 45%
+  residential exemption on homes and builder inventory, the annual roll, the
+  30 November / 1 March calendar), the bond program, and a Uses of Funds table
+  split **per series** so the senior and subordinate shares of the
+  reimbursement are visible side by side. It opens in Word.
 
 ## How the senior bonds are sized (revenue wrap)
 
@@ -207,20 +219,22 @@ released debt-service-reserve fund as a balloon.
 
 | Item | Model | Pricing-day workbook | Priced deal |
 |---|---:|---:|---:|
-| Senior new-money par | $5,670,000 | $5,690,000 | $5,645,000 |
+| Senior new-money par | $5,665,000 | $5,690,000 | $5,645,000 |
 | Total taxable value, 2031 roll | $197,316,506 | $197,316,506 | — |
-| Net pledged revenue, 2028 roll | $375,746 | $375,625 | — |
+| Net pledged revenue, 2028 roll | $375,369 | $375,625 | — |
 | Senior final maturity | 3/1/2054 | 3/1/2054 | 3/1/2054 |
-| DSRF | $490,000 | $545,055 | — |
-| Subordinate par | $1,653,000 (sized) | $1,000,000 (typed) | $1,000,000 |
+| DSRF | $475,000 | $545,055 | — |
+| Subordinate par | $1,730,000 (sized) | $1,000,000 (typed) | $1,000,000 |
 
 Taxable value ties **to the dollar** from the 2031 roll onward. Through
 build-out the model runs within 0.2% because lot inventory is carried at the
 **inflated** ASP (the current Colorado methodology) where the 2024 workbook used
 a flat base ASP. The first roll (2024) sits ~18% under the workbook — the value
 build recognises the opening lot inventory differently — but it backs $388 of
-revenue in a year with no debt service, so it is tracked rather than chased. The DSRF differs because the 3-prong test here rounds to $5,000
-and excludes the final maturity year from the max-DS prong. The subordinate par
+revenue in a year with no debt service, so it is tracked rather than chased. The
+DSRF differs because the 3-prong test here rounds to $5,000, is measured on
+**net** annual debt service, and excludes the final maturity year from the
+max-DS prong. The subordinate par
 differs because the model **sizes** the largest par the residual cashflow
 retires in full, where the workbook carries a hand-typed round number.
 

@@ -105,14 +105,14 @@ class RefundingAnalysis:
         sizer = SeniorLienSizer(cfg, self.sm)
         first_prin_year = delivery.year + 1
         final_year = delivery.year + cfg.final_mat_yrs_refunding
-        # The refunding bonds carry their own optional-redemption provisions
-        # (call protection, then premium/par call) just like the new-money bonds.
+        # The refunding bonds are call-protected for the same period as the
+        # new-money bonds, then callable at PAR — no declining-premium schedule.
         from .config import _edate
-        ref_premium_call = _edate(delivery, 12 * cfg.premium_call_years)
+        ref_par_call = _edate(delivery, 12 * cfg.premium_call_years)
         refunding_calls = CallProvisions(
-            premium_call_date=ref_premium_call,
-            par_call_date=_edate(ref_premium_call, 12 * cfg.call_premium_step_years),
-            premium_call_price=cfg.premium_call_price,
+            premium_call_date=ref_par_call,
+            par_call_date=ref_par_call,
+            premium_call_price=100.0,     # par call (no redemption premium)
         )
         refunding_bond = sizer.size(
             name=f"Refunding Series {delivery.year}",

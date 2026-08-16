@@ -33,7 +33,7 @@ from .development import DeveloperProjections
 # Each entry: (section, label, range_name, attr, kind, note)
 # kind: "str" | "float" | "pct" | "int" | "date" | "yesno"
 _SPECS: list[tuple] = [
-    ("Basic Inputs", "Metro District Name", "METRO", "pid_name", "str", ""),
+    ("Basic Inputs", "Public Infrastructure District Name", "METRO", "pid_name", "str", ""),
     ("Basic Inputs", "City", "CITY", "city", "str", ""),
     ("Basic Inputs", "County", "COUNTY", "county", "str", ""),
     ("Basic Inputs", "Developer", "DEVELOPER", "developer", "str", "memo addressee"),
@@ -88,7 +88,7 @@ _SPECS: list[tuple] = [
     ("Funds", "Surplus Fund Target Factor", "SURPLUS_FUND_TARGET_FACTOR", "surplus_fund_target_factor", "float", "x max senior DS"),
 
     ("Taxable Value Timing", "AV Lag (years)", "AV_LAG_YEARS", "av_lag_years", "int", ""),
-    ("Taxable Value Timing", "Strict Biennial Level-of-Value", "HOLD_VALUE_FLAT", "hold_value_flat", "yesno", "TRUE/FALSE"),
+    ("Taxable Value Timing", "Hold Value Flat Between Reassessments", "HOLD_VALUE_FLAT", "hold_value_flat", "yesno", "TRUE/FALSE"),
 
     ("Stress Testing", "Home Sales Pace (% of forecast)", "ABSORPTION_PACE_FACTOR", "absorption_pace_factor", "pct", "100% = base; 50% halves the monthly pace"),
 
@@ -525,8 +525,8 @@ def _write_debt_structure_sheet(ws, cfg: ModelConfig):
     ws.freeze_panes = "B4"
 
 
-# ── Historical Residential Exemption (Colorado residential assessment) rates — reference ─────
-# Residential taxable ratio by tax year / reassessment cycle.  Used to inform
+# ── Historical Utah residential exemption rates — reference ─────────────────
+# Residential taxable ratio by tax year.  Used to inform
 # RESID_TAXABLE_RATIO and RESID_TAXABLE_RATIO_PRIOR; this is a read-only reference table.
 from .config import RESIDENTIAL_EXEMPTION_HISTORY as _RATE_HISTORY
 from .config import BUILDER_INVENTORY_HISTORY as _INVENTORY_HISTORY
@@ -578,13 +578,14 @@ def _write_rate_table(ws, start_row, title, subtitle, rate_hdr, history,
     return r
 
 
-# Marker text used to locate the editable lot-inventory rate table on read-back.
+# Marker text used to locate the editable rate tables on read-back.
+_RESIDENTIAL_TABLE_TITLE = "Utah Primary Residential Exemption — Taxable Share of Fair Market Value"
 _INVENTORY_TABLE_TITLE = "Utah Builder Lot Inventory Taxable Ratios"
 
 
-def _load_vacant_land_schedule(wb) -> dict | None:
+def _load_rate_schedule(wb, table_title: str) -> dict | None:
     """
-    Read the editable lot-inventory / nonresidential rate table off the "Historical
+    Read an editable rate table (located by ``table_title``) off the "Historical
     Residential Exemption Rates" tab into a {roll_year: rate} schedule (carry-forward), keyed by
     the low bound of each row's Tax/Roll Year(s) label.  Returns None if absent.
     """
@@ -595,7 +596,7 @@ def _load_vacant_land_schedule(wb) -> dict | None:
     start = None
     for row in ws.iter_rows(min_col=2, max_col=2):
         v = row[0].value
-        if isinstance(v, str) and v.strip() == _INVENTORY_TABLE_TITLE:
+        if isinstance(v, str) and v.strip() == table_title:
             start = row[0].row
             break
     if start is None:
@@ -609,6 +610,10 @@ def _load_vacant_land_schedule(wb) -> dict | None:
             break
         if isinstance(ylabel, str) and ylabel.strip().lower() == "sources":
             break
+        # Stop if we run into the *next* table's title banner.
+        if isinstance(ylabel, str) and ylabel.strip() in (
+                _RESIDENTIAL_TABLE_TITLE, _INVENTORY_TABLE_TITLE):
+            break
         if isinstance(rate, (int, float)):
             try:
                 lo, _hi = _rate_year_bounds(str(ylabel))
@@ -619,6 +624,16 @@ def _load_vacant_land_schedule(wb) -> dict | None:
     return sched or None
 
 
+def _load_vacant_land_schedule(wb) -> dict | None:
+    """Editable lot-inventory / nonresidential rate table → {roll_year: rate}."""
+    return _load_rate_schedule(wb, _INVENTORY_TABLE_TITLE)
+
+
+def _load_residential_schedule(wb) -> dict | None:
+    """Editable residential (Utah) rate table → {roll_year: rate}."""
+    return _load_rate_schedule(wb, _RESIDENTIAL_TABLE_TITLE)
+
+
 def _write_reference_sheet(ws):
     ws.column_dimensions["A"].width = 2
     ws.column_dimensions["B"].width = 18
@@ -627,12 +642,14 @@ def _write_reference_sheet(ws):
 
     r = _write_rate_table(
         ws, 1,
-        "Utah Primary Residential Exemption — Taxable Share of Fair Market Value",
-        ("Reference only. Utah taxes primary residential property on 55% of fair market "
-         "value — the 45% exemption of Utah Const. art. XIII, § 3 and Utah Code "
-         "§ 59-2-103, covering the dwelling and up to one acre of land. Informs "
-         "RESID_TAXABLE_RATIO and RESID_TAXABLE_RATIO_PRIOR on the Inputs tab."),
-        "Residential Taxable Ratio", _RATE_HISTORY)
+        _RESIDENTIAL_TABLE_TITLE,
+        ("EDITABLE — Utah taxes primary residential property on 55% of fair market value "
+         "— the 45% exemption of Utah Const. art. XIII, § 3 and Utah Code § 59-2-103, "
+         "covering the dwelling and up to one acre of land. The rate has been flat at "
+         "55% since 1995. The model READS these yellow cells and applies them to "
+         "residential value by roll year (carry-forward past the last row); the "
+         "RESID_TAXABLE_RATIO cell on the Inputs tab overrides them when changed."),
+        "Residential Taxable Ratio", _RATE_HISTORY, editable=True)
 
     r += 2
     r = _write_rate_table(
@@ -795,6 +812,9 @@ def load_inputs_workbook(path: str) -> tuple[ModelConfig, DeveloperProjections]:
     vl_sched = _load_vacant_land_schedule(wb)          # editable lot-inventory rate table
     if vl_sched:
         overrides_cfg["lot_inventory_rate_schedule"] = vl_sched
+    res_sched = _load_residential_schedule(wb)         # editable residential (Utah) rate table
+    if res_sched:
+        overrides_cfg["residential_rate_schedule"] = res_sched
     cfg = ModelConfig(**overrides_cfg)
     dev = _load_dev_sheet(wb, overrides_dev)
     return cfg, dev

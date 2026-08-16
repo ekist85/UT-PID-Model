@@ -98,8 +98,14 @@ class SummaryModel:
 
             lot_av = vac_build.get(collect, {}).get("assessed", 0.0)
             residential_av = res_build.get(collect, {}).get("assessed", 0.0)
-            state_av_used = cfg.state_assessed
-            exempt_used = cfg.exempt_value
+            # State-assessed and exempt come from the certified inputs for a roll year
+            # entered in the historical table (e.g. 2024 state = 7,990); otherwise the
+            # standing STATE_ASSESSED / EXEMPT_VALUE inputs apply.
+            _hist = (cfg.historical_av or {}).get(collect - 1) or {}
+            state_av_used = (_hist["state_assessed"] if _hist.get("state_assessed") is not None
+                             else cfg.state_assessed)
+            exempt_used = (_hist["exempt"] if _hist.get("exempt") is not None
+                           else cfg.exempt_value)
 
             # ── Oil & gas producing property (AD) — assessed at its own ratio ─
             centrally_assessed_av = cfg.centrally_assessed_av
@@ -122,25 +128,25 @@ class SummaryModel:
                 + commercial_av / 1000.0 * cfg.commercial_mill_levy * cfg.tax_collect_mill_prc
             )
             if total_av < cfg.uniform_fee_av_threshold:
-                sot = mill_revenue * (cfg.uniform_fee_prc / 2)
+                uniform_fee = mill_revenue * (cfg.uniform_fee_prc / 2)
             else:
-                sot = mill_revenue * cfg.uniform_fee_prc
+                uniform_fee = mill_revenue * cfg.uniform_fee_prc
 
             # Net revenue available for SENIOR lien debt service (AX):
             #   mill + uniform fee - county collection cost - senior trustee fee
             #   - annual district administration (inflated, and not charged
             #     before the district is up and running)
-            treasurer_fee = mill_revenue * cfg.county_collection_fee
+            collection_fee = mill_revenue * cfg.county_collection_fee
             admin_cost, trustee_fee, trustee_fee_sub = cfg.district_costs(collect)
             if cfg.admin_cost_av_limit and total_av > cfg.admin_cost_av_limit:
                 admin_cost = 0.0
             net_senior_revenue = (
-                mill_revenue + sot - treasurer_fee - trustee_fee - admin_cost
+                mill_revenue + uniform_fee - collection_fee - trustee_fee - admin_cost
             )
 
             # Net revenue available for SUBORDINATE lien debt service (BO):
             #   mill + Uniform Fee - subordinate trustee fee   (no treasurer fee netted here)
-            net_sub_revenue = mill_revenue + sot - trustee_fee_sub
+            net_sub_revenue = mill_revenue + uniform_fee - trustee_fee_sub
 
             row = SummaryRow(
                 collection_year=collect,
@@ -152,7 +158,7 @@ class SummaryModel:
                 centrally_assessed_av=centrally_assessed_av,
                 state_av=state_av_used,
                 mill_revenue=mill_revenue,
-                uniform_fee_revenue=sot,
+                uniform_fee_revenue=uniform_fee,
                 net_senior_revenue=net_senior_revenue,
                 net_sub_revenue=net_sub_revenue,
             )

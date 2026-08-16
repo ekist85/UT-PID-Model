@@ -131,8 +131,8 @@ def _build_a1(ws, cfg, sm, prefix="A", scenario_label=""):
         (tot, "Total\nTaxable Value", 15),
         (dml, f"Debt\nMill Levy\n{mill:.4f}", 11),
         (col_, f"Mill Levy\nCollections\n{cfg.tax_collect_mill_prc:.2%}", 13),
-        (sot_, f"Specific\nOwnership Taxes\n{cfg.uniform_fee_prc:.0%}", 13),
-        (tre, f"County\nTreasurer Fee\n{cfg.county_collection_fee:.1%}", 13),
+        (sot_, f"Personal Property\nUniform Fee\n{cfg.uniform_fee_prc:.0%}", 13),
+        (tre, f"County\nCollection Cost\n{cfg.county_collection_fee:.1%}", 13),
         (net_, "Net Tax\nRevenue", 13),
     ]
     hr = _exhibit_header(ws, f"{prefix}-1", cfg,

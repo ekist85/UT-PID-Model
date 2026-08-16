@@ -4,9 +4,9 @@ Utah Public Infrastructure District financing, populated from the model outputs.
 
 Mirrors the Texas MUD and Arizona CFD reimbursement memos in look and structure
 (right-floated absorption table, assumption bullets, bond/reimbursement table,
-sources & uses), but states Colorado assumptions — mill levy (governing document cap +
-Gallagher adjustment), primary residential / lot-inventory taxable ratios, the
-reassessment on odd years, capitalized interest, the 3-prong DSRF, the
+sources & uses), but states Utah assumptions — the levy held under the
+§ 17D-4-303 cap, the 45% primary residential exemption applied to homes and to
+builder lot inventory, annual reassessment, capitalized interest, the 3-prong DSRF, the
 subordinate cash-flow note and the senior refunding — and pulls the bond program,
 development schedule and reimbursement figures from the model objects.
 """
@@ -71,7 +71,10 @@ table.data tr.sub td { background: #EBF3FB; font-style: italic; }
 
 
 def _money(x):
-    return f"${x:,.0f}"
+    # Accounting style: negatives in parentheses.  A refunding under Utah's
+    # fixed levy caps can genuinely return less than it costs, so this is a
+    # real case for a PID rather than a defensive flourish.
+    return f"(${abs(x):,.0f})" if x < 0 else f"${x:,.0f}"
 
 
 def _md(d):
@@ -172,8 +175,8 @@ def build_memo_html(cfg, sm, senior, su, sub=None, refunding=None, dev=None,
          f"{cfg.final_mat_yrs}-year final maturity, and are sized to a minimum "
          f"{cfg.dsc_senior:.2f}x debt-service coverage ratio."),
         (f"The senior debt-service reserve fund is sized to the 3-prong test (least of 10% of par, "
-         f"maximum annual debt service, or 125% of average annual debt service); interest earnings "
-         f"on fund balances offset debt service."),
+         f"maximum annual net debt service, or 125% of average annual net debt service); interest "
+         f"earnings on fund balances offset debt service."),
     ]
     assumptions.append(
         f"Utah property taxes are levied on value as of 1&nbsp;January and are due in a single "
@@ -260,10 +263,60 @@ def build_memo_html(cfg, sm, senior, su, sub=None, refunding=None, dev=None,
     bond_rows = "".join(rows)
 
     # ── Sources & Uses (first financing) ──────────────────────────────────
-    su_rows = "".join(
-        f"<tr><td class='l'>{k}</td><td>{_money(v)}</td></tr>"
-        for k, v in su.uses.items())
-    total_uses = sum(su.uses.values())
+    # Uses of Funds split per series (senior new-money vs. subordinate cash-flow
+    # note), mirroring the "Sources & Uses" tab so the reimbursement split is
+    # visible — same derivation as the workbook.
+    yr = cfg.delivery.year
+    has_sub = sub is not None and sub_par > 0
+    _capi = sum(p.capitalized_interest for p in senior.schedule)
+    _dsrf = senior.dsrf_deposit
+    _prem_sr = senior.total_premium
+    _uwd_sr = cfg.uwd_senior * sr_par
+    _uwd_sb = cfg.uwd_sub * sub_par
+    _coi = cfg.coi
+    _reimb_sr = sr_par + _prem_sr - _dsrf - _capi - _uwd_sr - _coi
+    _reimb_sb = sub_par - _uwd_sb
+    # (label, senior, sub) — sub = None means "not applicable" (blank cell).
+    uses_data = [
+        ("Estimated Reimbursement Amount", _reimb_sr, _reimb_sb),
+        ("Debt Service Reserve Fund", _dsrf, 0.0),
+        ("Capitalized Interest", _capi, 0.0),
+        ("Underwriter's Discount", _uwd_sr, _uwd_sb),
+        ("Costs of Issuance", _coi, None),
+    ]
+    total_sr = _reimb_sr + _dsrf + _capi + _uwd_sr + _coi
+    total_sb = _reimb_sb + _uwd_sb
+    total_uses = total_sr + total_sb
+
+    def _row_total(sv, bv):
+        return _money((sv or 0.0) + (bv or 0.0)) if bv is not None else _money(sv)
+
+    if has_sub:
+        u_rows = "".join(
+            f"<tr><td class='l'>{lbl}</td><td>{_money(sv)}</td>"
+            f"<td>{_money(bv) if bv is not None else ''}</td>"
+            f"<td>{_row_total(sv, bv)}</td></tr>"
+            for lbl, sv, bv in uses_data)
+        uses_table = (
+            '<table class="data" style="width:5.4in">\n'
+            '  <tr><th style="text-align:left">Uses of Funds — First Financing</th>'
+            f'<th>Senior Lien Bonds<br>Series {yr}A</th>'
+            f'<th>Subordinate Lien<br>Cash-Flow Note Series {yr}B</th><th>Total</th></tr>\n'
+            f'  {u_rows}\n'
+            f'  <tr class="total"><td class="l">Total Uses</td><td>{_money(total_sr)}</td>'
+            f'<td>{_money(total_sb)}</td><td>{_money(total_uses)}</td></tr>\n'
+            '</table>')
+    else:
+        u_rows = "".join(
+            f"<tr><td class='l'>{lbl}</td><td>{_row_total(sv, bv)}</td></tr>"
+            for lbl, sv, bv in uses_data)
+        uses_table = (
+            '<table class="data" style="width:3.3in">\n'
+            '  <tr><th style="text-align:left">Uses of Funds — First Financing</th>'
+            '<th>Amount</th></tr>\n'
+            f'  {u_rows}\n'
+            f'  <tr class="total"><td class="l">Total Uses</td><td>{_money(total_uses)}</td></tr>\n'
+            '</table>')
 
     logo_uri = _logo_data_uri()
     brand_cell = (f'<img src="{logo_uri}" alt="Tierra Financial Advisors" width="60" height="45" '
@@ -323,11 +376,7 @@ underwriter&rsquo;s discount and costs of issuance.</p>
 <p style="margin-top:10px">The first financing (senior new-money bonds{' plus the subordinate-lien note' if sub is not None and sub_par > 0 else ''})
 applies its sources as follows:</p>
 
-<table class="data" style="width:3.3in">
-  <tr><th style="text-align:left">Uses of Funds — First Financing</th><th>Amount</th></tr>
-  {su_rows}
-  <tr class="total"><td class="l">Total Uses</td><td>{_money(total_uses)}</td></tr>
-</table>
+{uses_table}
 
 <p style="margin-top:12px">Please call us if you have any questions or if we can be of any further assistance.</p>
 <div class="sig">Sincerely,<br><br>Evan Kist, CFA&nbsp;&nbsp;|&nbsp;&nbsp;Tierra Financial Advisors<br>

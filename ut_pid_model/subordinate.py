@@ -29,12 +29,21 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from datetime import date
 
 import pandas as pd
 
 from .config import ModelConfig
 from .summary import SummaryModel
 from .debt_service import BondTranche
+
+
+def _yearfrac_30360(d1: date, d2: date) -> float:
+    """30/360 year fraction between two dates (US bond basis)."""
+    dd1 = min(d1.day, 30)
+    dd2 = min(d2.day, 30) if dd1 == 30 else d2.day
+    days = (d2.year - d1.year) * 360 + (d2.month - d1.month) * 30 + (dd2 - dd1)
+    return days / 360.0
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -266,18 +275,37 @@ class SubordinateLien:
             # Subordinate coverage factor (Summary CJ)
             coverage_adj = available / coverage if coverage else available
 
-            # ── Interest: current coupon + accretion on unpaid balance ───────
-            current_interest = principal_balance * rate
-            interest_due = current_interest + accrued_balance
-            interest_paid = min(interest_due, coverage_adj)
+            # ── Interest accrual is anchored to the DATED date ───────────────
+            # Interest cannot accrue before the bonds are dated.  The first
+            # coupon period is a stub (dated date → first payment date); every
+            # period after that is a full year (12/15 → 12/15).
+            pay_date = date(y, cfg.prin_maturity, cfg.prin_maturity_day_sub)
+            prior_pay = date(y - 1, cfg.prin_maturity, cfg.prin_maturity_day_sub)
+            dated = cfg.delivery
+            if pay_date <= dated:
+                year_frac = 0.0                       # bonds not yet dated
+            elif prior_pay <= dated:
+                # First payment after dating — a stub, however many months it is.
+                year_frac = max(0.0, _yearfrac_30360(dated, pay_date))
+            else:
+                year_frac = 1.0
+            current_interest = principal_balance * rate * year_frac
 
-            # Unpaid interest accretes (compounds) into the accrued balance.
-            accrued_balance = interest_due - interest_paid
-
-            # ── Principal: residual cash after interest, capped at balance ───
-            residual_cash = max(0.0, coverage_adj - interest_paid)
-            principal_paid = min(principal_balance, residual_cash)
-            principal_balance -= principal_paid
+            if year_frac == 0.0:
+                # Bonds not yet dated — no interest accrues and no cash is
+                # applied to them (revenue stays in the senior surplus fund).
+                interest_paid = 0.0
+                principal_paid = 0.0
+            else:
+                # ── Interest: current coupon + accretion on unpaid balance ───
+                interest_due = current_interest + accrued_balance
+                interest_paid = min(interest_due, coverage_adj)
+                # Unpaid interest accretes (compounds) into the accrued balance.
+                accrued_balance = interest_due - interest_paid
+                # ── Principal: residual cash after interest, capped at balance ─
+                residual_cash = max(0.0, coverage_adj - interest_paid)
+                principal_paid = min(principal_balance, residual_cash)
+                principal_balance -= principal_paid
 
             rows.append({
                 "year": y,

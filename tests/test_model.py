@@ -405,18 +405,86 @@ def test_memo_states_the_utah_framework(deliverables):
         assert f"is &ldquo;{stale}" not in html
 
 
+def test_memo_uses_of_funds_splits_by_series(deliverables):
+    """The per-series Uses table must foot to each series' par, and to the total."""
+    import re
+    out, result = deliverables
+    html = (out / "ut_pid_model_memo.html").read_text()
+    block = re.search(r"Uses of Funds.*?</table>", html, re.S)
+    assert block, "memo has no Uses of Funds table"
+    body = block.group(0)
+    assert "Senior Lien Bonds" in body and "Subordinate Lien" in body
+    total_row = re.search(r"Total Uses.*?</tr>", body, re.S).group(0)
+    amounts = [int(x.replace(",", "")) for x in re.findall(r"\$([\d,]+)", total_row)]
+    assert len(amounts) == 3, amounts                       # senior, sub, total
+    senior_par = result["senior"].par_amount
+    sub_par = result["sub"].par_amount
+    assert amounts[0] == pytest.approx(senior_par + result["senior"].total_premium, abs=1)
+    assert amounts[1] == pytest.approx(sub_par, abs=1)
+    assert amounts[2] == pytest.approx(amounts[0] + amounts[1], abs=1)
+
+
+def test_memo_prints_negative_amounts_in_parentheses():
+    """Utah's fixed caps let a refunding return less than it costs — the memo
+    has to read as ($914,919), not $-914,919."""
+    from ut_pid_model.memo import _money
+    assert _money(-914_919) == "($914,919)"
+    assert _money(914_919) == "$914,919"
+
+
+def test_subordinate_first_coupon_is_a_stub_from_the_dated_date(built, senior):
+    """The note is dated 26 September and first pays 15 March, in the NEXT
+    calendar year.  Upstream would charge a full year; Utah gets a stub."""
+    from ut_pid_model import SubordinateLien, SurplusFund
+    cfg, _dev, sm = built
+    final = senior.final_year
+    sf = SurplusFund(cfg, sm).build(senior, None, cfg.first_collection_year, final)
+    par = SubordinateLien(cfg, sm).size_par(
+        senior, cfg.first_collection_year, final, surplus_fund=sf)
+    sub = SubordinateLien(cfg, sm).size(
+        par, senior, cfg.first_collection_year, final, surplus_fund=sf)
+    rows = {r["year"]: r for r in sub.rows}
+    yf = {y: (r["current_interest"] / (r["principal_balance"] * cfg.sub_interest_rate)
+              if r["principal_balance"] else 0.0)
+          for y, r in rows.items()}
+    first_pay = cfg.delivery.year + 1                       # 15 March 2025
+    assert yf[cfg.delivery.year] == pytest.approx(0.0)      # not yet dated
+    # 30/360 from 2024-09-26 to 2025-03-15 = 169/360.
+    assert yf[first_pay] == pytest.approx(169 / 360, abs=1e-4)
+    assert yf[first_pay + 1] == pytest.approx(1.0)
+
+
 def test_workbook_carries_no_colorado_labels(deliverables):
     import openpyxl
     out, _ = deliverables
     wb = openpyxl.load_workbook(out / "ut_pid_model_output.xlsx")
     stale = ("TABOR", "Gallagher", "Specific Ownership", "Service Plan",
-             "Oil & Gas", "SB24-233", "County Treasurer")
+             "Oil & Gas", "SB24-233", "County Treasurer", "Metro District",
+             "Assessed Valuation", "Biennial reassessment",
+             "biennial reassessment", "Specific\nOwnership",
+             "County\nTreasurer")
     for ws in wb.worksheets:
         for row in ws.iter_rows():
             for cell in row:
                 if isinstance(cell.value, str):
                     for term in stale:
                         assert term not in cell.value, f"{ws.title}!{cell.coordinate}: {term}"
+
+
+def test_no_colorado_identifiers_survive_in_the_package():
+    """Locals and dict keys are part of the port too — `sot`, `tabor` and
+    `treasurer_fee` name Colorado mechanisms Utah does not have."""
+    import glob
+    import re
+    pkg = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                       "ut_pid_model", "*.py")
+    banned = re.compile(r"\b(sot|tabor|treasurer_fee|gallagherize)\b")
+    offenders = []
+    for path in glob.glob(pkg):
+        for n, line in enumerate(open(path, encoding="utf-8"), 1):
+            if banned.search(line):
+                offenders.append(f"{os.path.basename(path)}:{n}: {line.strip()}")
+    assert not offenders, offenders
 
 
 def test_inputs_workbook_round_trips(tmp_path):

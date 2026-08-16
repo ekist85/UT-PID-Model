@@ -421,21 +421,23 @@ def schedule_dataframe(tranche: BondTranche) -> pd.DataFrame:
 def standard_dsrf(tranche: BondTranche) -> float:
     """
     Debt-service-reserve fund by the standard 3-prong test, rounded to $5,000:
-    the least of 10% of par, maximum annual (gross) debt service, and 125% of
-    average annual debt service.  Derived from the sized bond, so it follows the
+    the least of 10% of par, maximum annual NET debt service, and 125% of average
+    annual NET debt service.  Derived from the sized bond, so it follows the
     district's taxable value and tax revenue.
 
-    The maximum-annual-debt-service prong EXCLUDES the senior bonds' final
-    maturity year: that year's gross debt service is inflated by the released
-    DSRF paying down the final maturity, so it is not representative of ongoing
-    annual debt service.
+    Net debt service (principal + interest less capitalized interest, DSRF
+    earnings and the final-year DSRF release) is the amount actually paid from
+    pledged revenue, so the reserve is sized to that.  Both the maximum- and the
+    average-annual prongs EXCLUDE the senior bonds' final maturity year: its net
+    debt service is distorted by the released DSRF paying down the final maturity,
+    so it is not representative of ongoing annual debt service.
     """
-    annual = tranche.annual_gross_ds()
-    vals = [v for v in annual.values() if v > 1.0]
+    annual = tranche.annual_net_ds()
+    ongoing = {y: v for y, v in annual.items() if y != tranche.final_year}
+    vals = [v for v in ongoing.values() if v > 1.0]
     if not vals or tranche.par_amount <= 0:
         return 0.0
-    max_vals = [v for y, v in annual.items() if v > 1.0 and y != tranche.final_year]
-    max_ds = max(max_vals) if max_vals else max(vals)
+    max_ds = max(vals)
     raw = min(0.10 * tranche.par_amount, max_ds, 1.25 * sum(vals) / len(vals))
     return round(raw / 5000.0) * 5000.0
 

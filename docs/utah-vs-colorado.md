@@ -227,7 +227,7 @@ same input rows are retained under Utah names.
 
 ---
 
-## Sources
+## 11. Sources
 
 - Utah Code Title 17D, Chapter 4 (Public Infrastructure District Act), esp.
   §§ 17D-4-301, 17D-4-303
@@ -282,7 +282,7 @@ leaving Colorado behaviour in a Utah model.
 
 ## 13. What rides in the port beyond the renames
 
-Two upstream defects are fixed in the patch set and should go back to
+Three upstream defects are fixed in the patch set and should go back to
 `co_metro_model`:
 
 * **`SubordinateLien.size_par` rounds to the nearest $1,000.** The bisection
@@ -295,6 +295,16 @@ Two upstream defects are fixed in the patch set and should go back to
   negative revenue. The port bounds the loop to the builds. Nothing is sized
   past final maturity, so there is no numerical effect — only a projection that
   stops where the projection stops.
+* **`SubordinateLien` measures the stub coupon by calendar year.** Upstream
+  treats the first period as a stub only when the payment date falls in the same
+  calendar year as the dated date, and charges a full year otherwise. In
+  Colorado the note is dated 1 December and pays 15 December, so the test always
+  holds. In Utah the note is dated 26 September 2024 and first pays 15 March
+  2025 — a different calendar year — so upstream charges 12 months of interest
+  on bonds dated 5.6 months earlier. The port anchors the accrual to the dated
+  date: 2024 accrues nothing, 2025 accrues 0.4694 years (30/360 from 26
+  September to 15 March), and every period after that is a full year. Sized sub
+  par moves from $1,701,000 to $1,730,000.
 
 One Colorado change needed a Utah-specific adjustment rather than a straight
 port: `residential_assessment_rate` now falls back to the historical rate table
@@ -303,3 +313,16 @@ for the roll year instead of the flat config ratio, which is right for Colorado
 `RESID_TAXABLE_RATIO` cell inert in Utah, where the ratio has been flat at 55%
 since 1995. The Utah version honours an explicitly-changed input first, then
 falls back to the table.
+
+Two smaller Utah-specific departures ride alongside:
+
+* **The memo prints negative amounts in accounting parentheses.** Colorado's
+  `_money` helper renders `$-914,919`. Under Utah's fixed levy caps a refunding
+  can genuinely return less than it costs, so the memo has to
+  read correctly when it does: `($914,919)`.
+* **Colorado vocabulary is scrubbed out of internals, not just labels.** Locals
+  and dict keys carrying `sot` (specific ownership tax), `tabor`, and
+  `treasurer_fee` are renamed to `uniform_fee`, `resid_ratio`, and
+  `collection_fee`, and the module docstrings and section comments that still
+  described Gallagher adjustments and odd-year reassessment are rewritten. These
+  never reached a number, but they reach anyone reading the code.

@@ -178,6 +178,12 @@ _BODY        = Font(name="Calibri", size=9)
 _BOLD        = Font(name="Calibri", bold=True, size=9)
 _TOTAL_FONT  = Font(name="Calibri", bold=True, color="1F4E79", size=9)
 _RATE_FONT   = Font(name="Calibri", italic=True, size=7, color="808080")  # taxable ratios
+# Blue font marks figures that came from the certified Inputs template — certified
+# taxable values and historical (already-set) taxable ratios — so the user can
+# tell inputs-driven numbers from the model's projections at a glance.
+_CERT_COLOR  = "0070C0"
+_CERT_FONT   = Font(name="Calibri", size=9, color=_CERT_COLOR)
+_CERT_BOLD   = Font(name="Calibri", bold=True, size=9, color=_CERT_COLOR)
 _RATEFMT     = "0.000%"
 
 _CENTER = Alignment(horizontal="center", vertical="center", wrap_text=True)
@@ -263,16 +269,17 @@ def _build_residential_av_sheet(ws, cfg, dev, sm):
       Lots delivered → lot market value → lot taxable value @ rate;
       residential units → home market value (incl. reassessment) →
       cumulative home market value → home taxable value @ Taxable Ratio; → Total Residential Taxable Value.
-    Values are shown in the year the AV is created; the model collects it on the
-    Colorado lag (see Notes).
+    Values are shown in the year the value is created; the model collects it on
+    the Utah lag — created in a calendar year, on the following 1 January roll,
+    billed that 30 November, paying debt service the next 1 March (see Notes).
     """
     M = dev.cumulative_home_market_value
     closings = dev.home_closings
     lot_rate = cfg.lot_inventory_taxable_ratio
-    tabor = cfg.resid_taxable_ratio
+    resid_ratio = cfg.resid_taxable_ratio
 
     _title(ws, [cfg.pid_name, "Residential Taxable Value — Build",
-                f"Lots @ {lot_rate:.0%} of market · Homes @ {tabor:.3%} Residential Exemption · "
+                f"Lots @ {lot_rate:.0%} of market · Homes @ {resid_ratio:.3%} Residential Exemption · "
                 f"reassessment {cfg.reassess_rate:.1%}"], 9)
     hdrs = [
         (1, "AV-Set\nYear", 10),
@@ -282,7 +289,7 @@ def _build_residential_av_sheet(ws, cfg, dev, sm):
         (5, "Total\nResidential Units", 13),
         (6, "Home Market Value\n(+ reassessment)", 17),
         (7, "Cumulative Home\nMarket Value", 17),
-        (8, f"Home Taxable Value\n@ Taxable Ratio {tabor:.3%}", 15),
+        (8, f"Home Taxable Value\n@ Taxable Ratio {resid_ratio:.3%}", 15),
         (9, "Total Residential\nTaxable Value", 16),
     ]
     for col, lbl, w in hdrs:
@@ -349,10 +356,8 @@ def _build_summary_light_sheet(ws, cfg, sm, dev, senior, refunding_bond=None):
     vac = {r["collection"]: r for r in dev.lot_inventory_value_build(cfg)}
     res = {r["collection"]: r for r in dev.residential_value_build(cfg)}
     _title(ws, [cfg.pid_name, _county_line(cfg, " — Summary (Light)"),
-                "Aggregate per year — beginning & ending market value for builder lot inventory, "
-                "residential and state assessed → total taxable value → gross & net "
-                "revenue for sizing.  Flows from the Builder Lot Inventory Value / Residential "
-                "Value tabs."], 11)
+                "Aggregate per year: market value (beginning & ending) → total taxable "
+                "value → gross & net revenue for sizing."], 10)
     band = PatternFill("solid", fgColor="1F4E79")
     groups = [("", ["Assessment\nRoll Year", "Tax Collection\nYear"]),
               ("VACANT LAND — MARKET", ["Beginning", "Ending"]),
@@ -362,38 +367,51 @@ def _build_summary_light_sheet(ws, cfg, sm, dev, senior, refunding_bond=None):
     widths = [11, 12, 15, 15, 15, 15, 12, 16, 14, 15]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
+    # Group banners on row 5, column headers on row 6, data from row 7 — clear of the
+    # title block (rows 1-3) and its spacer (row 4) so nothing overlaps.
     c = 1
     for gname, subs in groups:
         if gname:
-            ws.merge_cells(start_row=4, start_column=c, end_row=4, end_column=c + len(subs) - 1)
-            gc = ws.cell(row=4, column=c, value=gname)
+            ws.merge_cells(start_row=5, start_column=c, end_row=5, end_column=c + len(subs) - 1)
+            gc = ws.cell(row=5, column=c, value=gname)
             gc.fill = band; gc.font = Font(name="Calibri", bold=True, color="FFFFFF", size=9)
             gc.alignment = _CENTER
             for cc in range(c, c + len(subs)):
-                ws.cell(row=4, column=cc).fill = band
+                ws.cell(row=5, column=cc).fill = band
+        else:
+            for cc in range(c, c + len(subs)):
+                ws.merge_cells(start_row=5, start_column=cc, end_row=6, end_column=cc)
         for k, sub in enumerate(subs):
-            _hdr(ws, 5, c + k, sub, widths[c + k - 1])
+            _hdr(ws, 6 if gname else 5, c + k, sub, widths[c + k - 1])
         c += len(subs)
     for i, r in enumerate(sm.rows):
         y = r.collection_year
-        rw = 6 + i
+        rw = 7 + i
         fill = _GRAY if i % 2 else _WHITE
         vb, rb = vac.get(y, {}), res.get(y, {})
         vb_prev, rb_prev = vac.get(y - 1, {}), res.get(y - 1, {})
+        # Certified/trued (historical) rows — blue-font their value cells, matching
+        # Summary - Detail.  Beginning columns follow the PRIOR row's certified state
+        # (a beginning value is the prior year's certified ending).  All dynamic —
+        # sourced from the value builds' certified flag, no hardcoded years.
+        v_cert, r_cert = bool(vb.get("certified")), bool(rb.get("certified"))
+        v_cert_prev, r_cert_prev = bool(vb_prev.get("certified")), bool(rb_prev.get("certified"))
+        cert_row = v_cert or r_cert
+        vfont = lambda hit: _CERT_FONT if hit else _BODY
         for c in range(1, 11):
             ws.cell(row=rw, column=c).fill = fill
             ws.cell(row=rw, column=c).border = _BORDER
         _cell(ws, rw, 1, y - 1, fill, align=_CENTER)
         _cell(ws, rw, 2, y, fill, align=_CENTER)
-        _cell(ws, rw, 3, round(vb_prev.get("cumulative", 0.0)) or None, fill, fmt=_DOLLAR)
-        _cell(ws, rw, 4, round(vb.get("cumulative", 0.0)) or None, fill, fmt=_DOLLAR)
-        _cell(ws, rw, 5, round(rb.get("beginning", 0.0)) or None, fill, fmt=_DOLLAR)
-        _cell(ws, rw, 6, round(rb.get("gross", 0.0)) or None, fill, fmt=_DOLLAR)
-        _cell(ws, rw, 7, round(r.state_av) or None, fill, fmt=_DOLLAR)
-        _cell(ws, rw, 8, round(r.total_av) or None, fill, _BOLD, fmt=_DOLLAR)
+        _cell(ws, rw, 3, round(vb_prev.get("cumulative", 0.0)) or None, fill, vfont(v_cert_prev), fmt=_DOLLAR)
+        _cell(ws, rw, 4, round(vb.get("cumulative", 0.0)) or None, fill, vfont(v_cert), fmt=_DOLLAR)
+        _cell(ws, rw, 5, round(rb.get("beginning", 0.0)) or None, fill, vfont(r_cert_prev), fmt=_DOLLAR)
+        _cell(ws, rw, 6, round(rb.get("gross", 0.0)) or None, fill, vfont(r_cert), fmt=_DOLLAR)
+        _cell(ws, rw, 7, round(r.state_av) or None, fill, vfont(cert_row), fmt=_DOLLAR)
+        _cell(ws, rw, 8, round(r.total_av) or None, fill, _CERT_BOLD if cert_row else _BOLD, fmt=_DOLLAR)
         _cell(ws, rw, 9, round(r.mill_revenue + r.uniform_fee_revenue) or None, fill, fmt=_DOLLAR)
         _cell(ws, rw, 10, round(r.net_senior_revenue) or None, fill, _BOLD, fmt=_DOLLAR)
-    ws.freeze_panes = "C6"
+    ws.freeze_panes = "C7"
 
 
 def _build_summary_av_sheet(ws, cfg, dev, sm):
@@ -422,7 +440,7 @@ def _build_summary_av_sheet(ws, cfg, dev, sm):
     cols += [("stateav", "+ State\nAssessed", 12), ("exempt", "− Exempt", 11),
              ("total", "Total\nTaxable Value", 16),
              ("mill", f"Mill-Levy Rev\n@ {cfg.effective_ds_mill_levy:.3f}", 14),
-             ("sot", f"Uniform\nFee\n@ {cfg.uniform_fee_prc:.0%}", 10),
+             ("uniform_fee", f"Uniform\nFee\n@ {cfg.uniform_fee_prc:.0%}", 10),
              ("gross", "Gross\nRevenue", 13),
              ("treas", f"− County Collection\n@ {cfg.county_collection_fee:.2%}", 13),
              ("trust", "− Senior\nTrustee", 11),
@@ -458,6 +476,8 @@ def _build_summary_av_sheet(ws, cfg, dev, sm):
     # Inputs template (historical certified values + existing values) — highlighted.
     vac_cert = {r["collection"] for r in dev.lot_inventory_value_build(cfg) if r.get("certified")}
     res_cert = {r["collection"] for r in dev.residential_value_build(cfg) if r.get("certified")}
+    state_cert = {R + 1 for R, h in (cfg.historical_av or {}).items()
+                  if h.get("state_assessed") is not None}
 
     bold_keys = {"total", "gross", "net"}
     for i, r in enumerate(sm.rows):
@@ -474,7 +494,7 @@ def _build_summary_av_sheet(ws, cfg, dev, sm):
         vals = {
             "lotav": r.lot_av, "homeav": r.residential_av, "ogav": r.centrally_assessed_av,
             "commav": r.commercial_av, "stateav": r.state_av, "exempt": -cfg.exempt_value,
-            "total": r.total_av, "mill": r.mill_revenue, "sot": r.uniform_fee_revenue,
+            "total": r.total_av, "mill": r.mill_revenue, "uniform_fee": r.uniform_fee_revenue,
             "gross": r.mill_revenue + r.uniform_fee_revenue, "treas": treas,
             "trust": trust, "subtrust": subtrust, "om": om, "net": r.net_senior_revenue,
         }
@@ -482,10 +502,18 @@ def _build_summary_av_sheet(ws, cfg, dev, sm):
         _cell(ws, rw, 2, r.collection_year, fill, align=_CENTER)
         cert_row = y in vac_cert or y in res_cert
         for key, col in pos.items():
-            font = _BOLD if key in bold_keys else _BODY
-            # Highlight the taxable values / total that came from the certified inputs.
+            # Highlight AND blue-font the taxable values / total that came from the
+            # certified Inputs template, so inputs-driven AV stands out from projections.
+            # State assessed is highlighted on any certified/trued row (so the whole
+            # row reads consistently), as well as any year whose state value came
+            # straight from the historical inputs table.
             hi = (key == "lotav" and y in vac_cert) or (key == "homeav" and y in res_cert) \
+                or (key == "stateav" and (cert_row or y in state_cert)) \
                 or (key == "total" and cert_row)
+            if hi:
+                font = _CERT_BOLD if key in bold_keys else _CERT_FONT
+            else:
+                font = _BOLD if key in bold_keys else _BODY
             cell_fill = _HILITE if hi else fill
             _cell(ws, rw, col, round(vals.get(key, 0.0)) or None, cell_fill, font, fmt=_DOLLAR)
     ws.freeze_panes = "C7"
@@ -742,7 +770,7 @@ def _build_su_first_sheet(ws, cfg, senior, sub_result, surplus_fund=None, dev=No
     # ── Taxing-authority & fee assumptions ───────────────────────────────────
     section(r, "Taxing Authority and Fee Assumptions:"); r += 2
     ws.cell(row=r, column=LBL, value="Residential Taxable Ratio").font = _BOLD; r += 1
-    drow(r, "  Prior Residential Taxable Ratio", None, None, cfg.resid_taxable_ratio_prior, fmt='0.000%'); r += 1
+    drow(r, "  Governing Document Adjusted Base Rate", None, None, cfg.resid_taxable_ratio_prior, fmt='0.000%'); r += 1
     drow(r, "  Financing Plan Assumption", None, None, cfg.resid_taxable_ratio, fmt='0.000%'); r += 1
     ws.cell(row=r, column=LBL, value="Debt Service Mills").font = _BOLD; r += 1
     drow(r, "  Governing Document Mill Levy Cap", None, None, cfg.mill_levy_governing_doc, fmt='0.000'); r += 1
@@ -876,7 +904,7 @@ def _build_su_refunding_sheet(ws, cfg, refunding_result, dev=None):
 
     section(r, "Taxing Authority and Fee Assumptions:"); r += 2
     ws.cell(row=r, column=LBL, value="Residential Taxable Ratio").font = _BOLD; r += 1
-    drow(r, "  Prior Residential Taxable Ratio", cfg.resid_taxable_ratio_prior, fmt='0.000%'); r += 1
+    drow(r, "  Governing Document Adjusted Base Rate", cfg.resid_taxable_ratio_prior, fmt='0.000%'); r += 1
     drow(r, "  Financing Plan Assumption", cfg.resid_taxable_ratio, fmt='0.000%'); r += 1
     ws.cell(row=r, column=LBL, value="Debt Service Mills").font = _BOLD; r += 1
     drow(r, "  Governing Document Mill Levy Cap", cfg.mill_levy_governing_doc, fmt='0.000'); r += 1
@@ -1101,7 +1129,8 @@ def _build_lot_inventory_value_sheet(ws, cfg, dev):
     rows = dev.lot_inventory_value_build(cfg)
     _title(ws, [cfg.pid_name, "Builder Lot Inventory Value — Residential",
                 "Value of new lots → less lots rolled into homes → net (lagged) → "
-                "certified-value adjustments → cumulative 100% lot value → assessed."], 10)
+                "certified-value adjustments → cumulative 100% lot value → taxable "
+                "value @ the residential exemption."], 10)
     hdrs = [(1, "Roll", 9), (2, "Collection\nYear", 10),
             (3, "Value of\nNew Lots", 14), (4, "− Lots to\nHomes", 14),
             (5, "Net Value\nwith Lag", 14), (6, "Adjustments", 14),
@@ -1109,10 +1138,18 @@ def _build_lot_inventory_value_sheet(ws, cfg, dev):
             (9, "Taxable\nRatio", 11), (10, "Taxable\nValue of Lots", 15)]
     for col, lbl, w in hdrs:
         _hdr(ws, 5, col, lbl, w)
+    # Historical (already-set) roll years come from the certified Inputs template; their
+    # taxable ratios are blue-fonted, projected-forward ratios keep the normal font.
+    hist_cut = max((cfg.historical_av or {}).keys(), default=None)
     for i, r in enumerate(rows):
         rw = 6 + i
         fill = _GRAY if i % 2 else _WHITE
+        # Highlight every non-zero adjustment — the first-year true-up plug and the
+        # recognition / amortization plugs alike.
         hi = _HILITE if r["adjustment"] else fill
+        # Certified taxable value (from inputs) → blue font; historical ratio → blue font.
+        assessed_font = _CERT_BOLD if r.get("certified") else _BOLD
+        ratio_font = _CERT_FONT if (hist_cut is not None and r["av_set"] <= hist_cut) else _BODY
         _cell(ws, rw, 1, r["av_set"], fill, align=_CENTER)
         _cell(ws, rw, 2, r["collection"], fill, align=_CENTER)
         _cell(ws, rw, 3, round(r["new_lots"]) or None, fill, fmt=_DOLLAR)
@@ -1121,8 +1158,8 @@ def _build_lot_inventory_value_sheet(ws, cfg, dev):
         _cell(ws, rw, 6, round(r["adjustment"]) or None, hi, fmt=_DOLLAR)
         _cell(ws, rw, 7, round(r["cumulative"]) or None, fill, _BOLD, fmt=_DOLLAR)
         _cell(ws, rw, 8, round(r["cumulative"]) or None, fill, fmt=_DOLLAR)
-        _cell(ws, rw, 9, r["ratio"], fill, fmt=_RATEFMT)
-        _cell(ws, rw, 10, round(r["assessed"]) or None, fill, _BOLD, fmt=_DOLLAR)
+        _cell(ws, rw, 9, r["ratio"], fill, ratio_font, fmt=_RATEFMT)
+        _cell(ws, rw, 10, round(r["assessed"]) or None, fill, assessed_font, fmt=_DOLLAR)
     ws.freeze_panes = "C6"
     return {r["collection"]: r["assessed"] for r in rows}
 
@@ -1131,8 +1168,9 @@ def _build_lot_inventory_value_sheet(ws, cfg, dev):
 def _build_residential_value_sheet(ws, cfg, dev):
     rows = dev.residential_value_build(cfg)
     _title(ws, [cfg.pid_name, "Residential Value — Projected Taxable Value",
-                "Beginning market value → + new home value added to rolls → + biennial "
-                "reassessment → + certified-value adjustments → gross market value → assessed."], 10)
+                "Beginning market value → + new home value added to rolls → + annual "
+                "reassessment → + certified-value adjustments → gross market value → "
+                "taxable value @ the residential exemption."], 10)
     hdrs = [(1, "Roll", 9), (2, "Tax Rev\nYear", 10),
             (3, "Beginning\nMarket Value", 15), (4, "New Market\nValue Added", 15),
             (5, "Mkt Value\nAdded to Rolls", 15), (6, "Annual\nReassessment", 14),
@@ -1140,10 +1178,14 @@ def _build_residential_value_sheet(ws, cfg, dev):
             (9, "Taxable\nRatio", 11), (10, "Taxable\nValue", 15)]
     for col, lbl, w in hdrs:
         _hdr(ws, 5, col, lbl, w)
+    # Historical (already-set) roll years from the certified Inputs template → blue ratio.
+    hist_cut = max((cfg.historical_av or {}).keys(), default=None)
     for i, r in enumerate(rows):
         rw = 6 + i
         fill = _GRAY if i % 2 else _WHITE
         hi = _HILITE if r["adjustment"] else fill
+        assessed_font = _CERT_BOLD if r.get("certified") else _BOLD
+        ratio_font = _CERT_FONT if (hist_cut is not None and r["av_set"] <= hist_cut) else _BODY
         _cell(ws, rw, 1, r["av_set"], fill, align=_CENTER)
         _cell(ws, rw, 2, r["collection"], fill, align=_CENTER)
         _cell(ws, rw, 3, round(r["beginning"]) or None, fill, fmt=_DOLLAR)
@@ -1152,8 +1194,8 @@ def _build_residential_value_sheet(ws, cfg, dev):
         _cell(ws, rw, 6, round(r["reassess"]) or None, fill, fmt=_DOLLAR)
         _cell(ws, rw, 7, round(r["adjustment"]) or None, hi, fmt=_DOLLAR)
         _cell(ws, rw, 8, round(r["gross"]) or None, fill, _BOLD, fmt=_DOLLAR)
-        _cell(ws, rw, 9, r["ratio"], fill, fmt=_RATEFMT)
-        _cell(ws, rw, 10, round(r["assessed"]) or None, fill, _BOLD, fmt=_DOLLAR)
+        _cell(ws, rw, 9, r["ratio"], fill, ratio_font, fmt=_RATEFMT)
+        _cell(ws, rw, 10, round(r["assessed"]) or None, fill, assessed_font, fmt=_DOLLAR)
     ws.freeze_panes = "C6"
     return {r["collection"]: r["assessed"] for r in rows}
 
@@ -1187,8 +1229,8 @@ def _build_coverage_sheet(ws, cfg, sm, senior, refunding_bond=None):
 # ── Operations & Maintenance (O&M) revenue projection ─────────────────────────
 def _build_om_sheet(ws, cfg, sm):
     """
-    O&M revenue projection: the operations mill levy applied to total assessed
-    value, collected at the collection rate, plus the specific-ownership tax —
+    O&M revenue projection: the operations mill levy applied to total taxable
+    value, collected at the collection rate, plus the personal property uniform fee —
     the total available each year for operations & maintenance.
     """
     ops_mill = cfg.mill_levy_ops_target
@@ -1203,7 +1245,7 @@ def _build_om_sheet(ws, cfg, sm):
     for col, lbl, w in hdrs:
         _hdr(ws, 5, col, lbl, w)
 
-    tot_coll = tot_sot = tot_avail = 0.0
+    tot_coll = tot_uniform_fee = tot_avail = 0.0
     for i, r in enumerate(sm.rows):
         rw = 6 + i
         fill = _GRAY if i % 2 else _WHITE
@@ -1212,14 +1254,14 @@ def _build_om_sheet(ws, cfg, sm):
         # threshold), matching the pledged-revenue waterfall.
         so_rate = (cfg.uniform_fee_prc / 2 if r.total_av < cfg.uniform_fee_av_threshold
                    else cfg.uniform_fee_prc)
-        sot = collections * so_rate
-        avail = collections + sot
-        tot_coll += collections; tot_sot += sot; tot_avail += avail
+        uniform_fee = collections * so_rate
+        avail = collections + uniform_fee
+        tot_coll += collections; tot_uniform_fee += uniform_fee; tot_avail += avail
         _cell(ws, rw, 1, r.collection_year, fill, align=_CENTER)
         _cell(ws, rw, 2, round(r.total_av, 0) or None, fill, fmt=_DOLLAR)
         _cell(ws, rw, 3, ops_mill, fill, fmt='0.000', align=_CENTER)
         _cell(ws, rw, 4, round(collections, 0) or None, fill, fmt=_DOLLAR)
-        _cell(ws, rw, 5, round(sot, 0) or None, fill, fmt=_DOLLAR)
+        _cell(ws, rw, 5, round(uniform_fee, 0) or None, fill, fmt=_DOLLAR)
         _cell(ws, rw, 6, round(avail, 0) or None, fill, fmt=_DOLLAR)
 
     rw = 6 + len(sm.rows)
@@ -1227,7 +1269,7 @@ def _build_om_sheet(ws, cfg, sm):
     _cell(ws, rw, 2, None, _TOTAL)
     _cell(ws, rw, 3, None, _TOTAL)
     _cell(ws, rw, 4, round(tot_coll, 0) or None, _TOTAL, font=_TOTAL_FONT, fmt=_DOLLAR)
-    _cell(ws, rw, 5, round(tot_sot, 0) or None, _TOTAL, font=_TOTAL_FONT, fmt=_DOLLAR)
+    _cell(ws, rw, 5, round(tot_uniform_fee, 0) or None, _TOTAL, font=_TOTAL_FONT, fmt=_DOLLAR)
     _cell(ws, rw, 6, round(tot_avail, 0) or None, _TOTAL, font=_TOTAL_FONT, fmt=_DOLLAR)
     ws.freeze_panes = "A6"
 
@@ -1346,7 +1388,7 @@ def _build_call_schedule_sheet(ws, cfg, refunding_result=None):
                   "August", "September", "October", "November", "December"]
     _WRAP_L = Alignment(horizontal="left", vertical="center", wrap_text=True)
 
-    def _table(r, title, subtitle, prem_date):
+    def _table(r, title, subtitle, prem_date, par_only=False):
         ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=3)
         c = ws.cell(row=r, column=1, value=title)
         c.fill = _BLUE; c.font = _WHITE_FONT; c.alignment = _LEFT
@@ -1363,8 +1405,10 @@ def _build_call_schedule_sheet(ws, cfg, refunding_result=None):
         r += 1
 
         m, d = prem_date.month, prem_date.day
+        # A par-only call has no declining-premium schedule — callable at 100% on
+        # and after the first call date.
+        steps = 0 if par_only else cfg.call_premium_step_years
         initial = cfg.premium_call_price - 100.0
-        steps = cfg.call_premium_step_years           # whole years to reach par
         end_m = 12 if m == 1 else m - 1               # day before the anniversary
         last_day = "30" if end_m in (4, 6, 9, 11) else ("28" if end_m == 2 else "31")
         for k in range(steps):                        # one row per premium year
@@ -1377,7 +1421,7 @@ def _build_call_schedule_sheet(ws, cfg, refunding_result=None):
             _cell(ws, r, 2, window, fill, align=_LEFT)
             _cell(ws, r, 3, premium / 100.0, fill, fmt='0.00%', align=_CENTER)
             r += 1
-        # Par thereafter
+        # Par thereafter (the only row for a par-only call)
         fill = _GRAY if steps % 2 else _WHITE
         par_year = prem_date.year + steps
         _cell(ws, r, 1, None, fill)
@@ -1394,12 +1438,12 @@ def _build_call_schedule_sheet(ws, cfg, refunding_result=None):
         cfg.premium_call_date)
     if refunding_result is not None:
         rd = cfg.delivery_refunding
-        ref_prem = _edate(rd, 12 * cfg.premium_call_years)
+        ref_par = _edate(rd, 12 * cfg.premium_call_years)
         r = _table(
             r, "REFUNDING BONDS",
-            f"Delivered {rd:%B %d, %Y}; callable on and after {ref_prem:%B %d, %Y} "
-            f"at par plus accrued interest and a premium of:",
-            ref_prem)
+            f"Delivered {rd:%B %d, %Y}; callable on and after {ref_par:%B %d, %Y} "
+            f"at par plus accrued interest (no redemption premium):",
+            ref_par, par_only=True)
     ws.freeze_panes = "A5"
 
 
@@ -1424,7 +1468,7 @@ def _build_notes_sheet(ws, cfg, senior, sub_result=None, refunding_result=None):
         ("note", "Primary residential taxable ratio", _pct(cfg.resid_taxable_ratio)),
         ("note", "Taxable-value lag", f"{cfg.av_lag_years} years"
             + (" (two-year level-of-value hold)" if cfg.hold_value_flat else "")),
-        ("note", "Biennial reassessment (residential / commercial)",
+        ("note", f"{cfg.reassess_frequency} reassessment (residential / commercial)",
             f"{_pct(cfg.reassess_rate)} / {_pct(cfg.reassess_comm_rate)}"),
         ("note", "Debt-service mill levy"
                  + f" (cap {cfg.mill_levy_cap:.3f})",
@@ -1441,14 +1485,17 @@ def _build_notes_sheet(ws, cfg, senior, sub_result=None, refunding_result=None):
         ("note", "Refunding coupon / coverage",
             f"{_pct(cfg.senior_refunding_interest_rate)} / {cfg.dsc_refunding:.2f}x"),
         ("note", "Capitalized-interest period", f"{cfg.capi_term} months"),
-        ("note", "Optional redemption",
+        ("note", "Optional redemption — senior",
             f"callable {cfg.premium_call_date} at {cfg.premium_call_price:.0f}%, "
             f"premium steps down 1.00%/yr to par by {cfg.par_call_date}"),
+        ("note", "Optional redemption — refunding",
+            f"callable at par {cfg.premium_call_years} years after delivery "
+            f"(no redemption premium)"),
         ("note", "Interest-earnings rate (reserve / surplus)", _pct(cfg.interest_earn_rate)),
         ("SECTION", "Dynamically Sized Amounts", ""),
         ("note", "Senior par (sized to revenue at coverage)",
             f"${senior.par_amount:,.0f}" if senior else "—"),
-        ("note", "Debt service reserve fund (3-prong: 10% par / max DS / 125% avg DS)",
+        ("note", "Debt service reserve fund (3-prong: 10% par / max net DS / 125% avg net DS)",
             f"${dsrf:,.0f}"),
         ("note", "Capitalized interest fund", f"${capi:,.0f}"),
         ("note", "Subordinate par (sized to residual surplus)", f"${sub_par:,.0f}"),

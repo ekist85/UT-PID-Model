@@ -97,6 +97,14 @@ IDENTIFIER_RENAMES = [
     ("om_carveout_av_limit", "admin_cost_av_limit"),
     ("om_carveout", "admin_cost"),
     ("om_growth_rate", "admin_growth_rate"),
+    # Locals/keys that still carried Colorado vocabulary.  Utah has no specific
+    # ownership tax (it is the § 59-2-405 uniform fee), no TABOR, and no county
+    # treasurer's fee netted from the distribution (§ 59-2-1602 funds assessing
+    # and collecting through a separate statewide levy).
+    ("sot", "uniform_fee"),
+    ("tot_sot", "tot_uniform_fee"),
+    ("treasurer_fee", "collection_fee"),
+    ("tabor", "resid_ratio"),
 ]
 
 
@@ -147,6 +155,10 @@ LABEL_SUBS = [
     ("SOT AV Threshold", "Uniform Fee Taxable Value Threshold"),
     ("SOT\\n", "Uniform\\nFee\\n"),
     ("+ SOT", "+ Uniform Fee"),
+    ("County\\nTreasurer Fee", "County\\nCollection Cost"),
+    ("Specific\\nOwnership Taxes", "Personal Property\\nUniform Fee"),
+    ("Specific\\nOwnership Tax", "Personal Property\\nUniform Fee"),
+    ("Metro District Name", "Public Infrastructure District Name"),
     ("County Treasurer Fee", "County Collection Cost"),
     ("County treasurer fee", "County collection cost"),
     ("county treasurer fee", "county collection cost"),
@@ -725,29 +737,37 @@ UTAH_TAX_CALENDAR = [
 CONFIG_TAIL_MARKER = "# ── Historical Colorado residential (Utah) taxable ratios ─"
 
 
-_p("config.py", '''        An explicit ``residential_assessment_schedule`` wins; otherwise the
-        historical/future Residential Exemption rate for the ROLL year (= collection year − 1) is
-        applied from the Utah Property Tax Reference table (6.7% / 6.25% / 6.95%),
-        rather than a single flat ``resid_taxable_ratio``.
+_p("config.py", '''        Precedence: an explicit collection-year ``residential_assessment_schedule``
+        wins; then the editable ROLL-year ``residential_rate_schedule`` read back
+        from the "Utah Property Tax Reference" tab (so the template drives the rates —
+        e.g. 2026+ = 6.80% per HB24B-1001); otherwise the built-in RESIDENTIAL_EXEMPTION_HISTORY
+        rate for the ROLL year (= collection year − 1) applies.
         """
         if self.residential_assessment_schedule:
             return _schedule_lookup(
                 self.residential_assessment_schedule, collection_year, self.resid_taxable_ratio)
+        if self.residential_rate_schedule:
+            return _schedule_lookup(
+                self.residential_rate_schedule, collection_year - 1, self.resid_taxable_ratio)
         return residential_taxable_ratio_for(collection_year - 1)''',
-   '''        Precedence: an explicit ``residential_assessment_schedule`` wins; then the
-        Inputs-page ``resid_taxable_ratio`` whenever it differs from the statutory
-        45% exemption (so overriding the cell actually changes the model); then
-        the statutory table for the ROLL year (= collection year − 1).
+   '''        Precedence: an explicit collection-year ``residential_assessment_schedule``
+        wins; then the Inputs-page ``resid_taxable_ratio`` whenever it differs from
+        the statutory 45% exemption (so overriding that cell actually changes the
+        model); then the editable ROLL-year ``residential_rate_schedule`` read back
+        from the "Utah Property Tax Reference" tab; otherwise the statutory table.
 
-        Utah's exemption has been flat at 55% since 1995, so the table and the
-        input agree unless someone deliberately changes one.  Colorado needs the
-        table because its ratio moves year to year.
+        Utah's exemption has been flat at 55% since 1995, so all four agree unless
+        someone deliberately changes one.  Colorado needs the table on top because
+        its ratio moves every reappraisal cycle.
         """
         if self.residential_assessment_schedule:
             return _schedule_lookup(
                 self.residential_assessment_schedule, collection_year, self.resid_taxable_ratio)
         if abs(self.resid_taxable_ratio - DEFAULT_RESID_TAXABLE_RATIO) > 1e-12:
             return self.resid_taxable_ratio
+        if self.residential_rate_schedule:
+            return _schedule_lookup(
+                self.residential_rate_schedule, collection_year - 1, self.resid_taxable_ratio)
         return residential_taxable_ratio_for(collection_year - 1)''')
 
 
@@ -887,24 +907,24 @@ taxes are due 30 November of that prior year, so the money is in hand before the
 
 _p("summary.py", '''            # Net revenue available for SENIOR lien debt service (AX):
             #   mill + Uniform Fee - county collection cost - senior trustee fee - O&M carveout
-            treasurer_fee = mill_revenue * cfg.county_collection_fee
+            collection_fee = mill_revenue * cfg.county_collection_fee
             net_senior_revenue = (
-                mill_revenue + sot - treasurer_fee - cfg.trustee_fee - cfg.admin_cost
+                mill_revenue + uniform_fee - collection_fee - cfg.trustee_fee - cfg.admin_cost
             )''',
    '''            # Net revenue available for SENIOR lien debt service (AX):
             #   mill + uniform fee - county collection cost - senior trustee fee
             #   - annual district administration (inflated, and not charged
             #     before the district is up and running)
-            treasurer_fee = mill_revenue * cfg.county_collection_fee
+            collection_fee = mill_revenue * cfg.county_collection_fee
             admin_cost, trustee_fee, trustee_fee_sub = cfg.district_costs(collect)
             if cfg.admin_cost_av_limit and total_av > cfg.admin_cost_av_limit:
                 admin_cost = 0.0
             net_senior_revenue = (
-                mill_revenue + sot - treasurer_fee - trustee_fee - admin_cost
+                mill_revenue + uniform_fee - collection_fee - trustee_fee - admin_cost
             )''')
 
-_p("summary.py", '''            net_sub_revenue = mill_revenue + sot - cfg.trustee_fee_sub''',
-   '''            net_sub_revenue = mill_revenue + sot - trustee_fee_sub''')
+_p("summary.py", '''            net_sub_revenue = mill_revenue + uniform_fee - cfg.trustee_fee_sub''',
+   '''            net_sub_revenue = mill_revenue + uniform_fee - trustee_fee_sub''')
 
 
 # ── subordinate.py ───────────────────────────────────────────────────────────
@@ -963,6 +983,33 @@ _p("summary.py", '''        # Collection years run from first_year+2 (first AV a
         for collect in range(cfg.first_year + 2, last_collect + 1):''')
 
 
+# Upstream measures the first (stub) coupon period only when the payment date
+# falls in the SAME calendar year as the dated date.  That holds in Colorado
+# (dated 1 December, sub pays 15 December) but not in Utah, where a September
+# delivery's first sub payment is the following 15 March — upstream charges that
+# a full year of interest against ~5.6 months of elapsed time.  Anchor the stub
+# to the first payment date AFTER dating instead, which is correct in both
+# states.  Worth pushing back to co_metro_model.
+_p("subordinate.py", '''            pay_date = date(y, cfg.prin_maturity, cfg.prin_maturity_day_sub)
+            dated = cfg.delivery
+            if y < dated.year:
+                year_frac = 0.0
+            elif y == dated.year:
+                year_frac = max(0.0, _yearfrac_30360(dated, pay_date))
+            else:
+                year_frac = 1.0''',
+   '''            pay_date = date(y, cfg.prin_maturity, cfg.prin_maturity_day_sub)
+            prior_pay = date(y - 1, cfg.prin_maturity, cfg.prin_maturity_day_sub)
+            dated = cfg.delivery
+            if pay_date <= dated:
+                year_frac = 0.0                       # bonds not yet dated
+            elif prior_pay <= dated:
+                # First payment after dating — a stub, however many months it is.
+                year_frac = max(0.0, _yearfrac_30360(dated, pay_date))
+            else:
+                year_frac = 1.0''')
+
+
 # ── report.py ────────────────────────────────────────────────────────────────
 
 _p("report.py", '''                "net revenue for sizing.  Lot-inventory and home taxable value flow from the Vacant "
@@ -986,7 +1033,7 @@ _p("report.py", '''        trust = -cfg.trustee_fee if r.total_av > 0 else 0.0
 _p("report.py", '''        ("om", "− O&M\\nCarveout", 11),''',
    '''        ("om", "− District\\nAdmin", 11),''')
 
-_p("report.py", '''                 + (" (Gallagherized)" if cfg.gallagherization == "Yes" else ""),''',
+_p("report.py", '''                 + (" (adjusted)" if cfg.gallagherization == "Yes" else ""),''',
    '''                 + f" (cap {cfg.mill_levy_cap:.3f})",''')
 
 
@@ -1011,7 +1058,7 @@ _p("residential_report.py", '''        "Builder lot inventory is nonresidential:
 
 # ── inputs.py ────────────────────────────────────────────────────────────────
 
-_p("inputs.py", '''    ("Tax & Valuation", "Gallagherize the Rate", "GALLAGHERIZATION", "gallagherization", "yesno", "Yes/No"),''',
+_p("inputs.py", '''    ("Tax & Valuation", "Adjust the Rate", "GALLAGHERIZATION", "gallagherization", "yesno", "Yes/No"),''',
    '''    ("Tax & Valuation", "Reassessment Frequency", "REASSESS_FREQUENCY", "reassess_frequency", "text", "Annual (Utah, § 59-2-303.1) or Biennial (Colorado cadence)"),''')
 
 _p("inputs.py", '''    ("Mill Levies", "Mill Levy — Governing Document Cap", "MILL_LEVY_GOVERNING_DOC", "mill_levy_governing_doc", "float", "mills"),''',
@@ -1075,15 +1122,20 @@ _p("inputs.py", '''_RATE_SOURCES = [
     "Utah Code § 59-2-503 — agricultural (Greenbelt) valuation; rollback tax on withdrawal",
 ]''')
 
-_p("inputs.py", '''        "Historical Residential Exemption / Colorado Residential Taxable Ratios",
-        ("Reference only — residential taxable ratio by tax year. A metro district "
-         "is a local government; use the local-government rate. Informs RESID_TAXABLE_RATIO "
-         "and RESID_TAXABLE_RATIO_PRIOR on the Inputs tab."),''',
-   '''        "Utah Primary Residential Exemption — Taxable Share of Fair Market Value",
-        ("Reference only. Utah taxes primary residential property on 55% of fair market "
-         "value — the 45% exemption of Utah Const. art. XIII, § 3 and Utah Code "
-         "§ 59-2-103, covering the dwelling and up to one acre of land. Informs "
-         "RESID_TAXABLE_RATIO and RESID_TAXABLE_RATIO_PRIOR on the Inputs tab."),''')
+_p("inputs.py", '''_RESIDENTIAL_TABLE_TITLE = "Historical Residential Exemption / Colorado Residential Taxable Ratios"''',
+   '''_RESIDENTIAL_TABLE_TITLE = "Utah Primary Residential Exemption — Taxable Share of Fair Market Value"''')
+
+_p("inputs.py", '''        ("EDITABLE — residential (Utah) taxable ratio by tax/roll year. A metro "
+         "district is a local government; use the local-government rate. The model "
+         "READS these yellow rate cells and applies them to residential value by roll "
+         "year (carry-forward for years past the last row). Edit a rate to retune it "
+         "(e.g. 2026+ = 6.80% per HB24B-1001)."),''',
+   '''        ("EDITABLE — Utah taxes primary residential property on 55% of fair market value "
+         "— the 45% exemption of Utah Const. art. XIII, § 3 and Utah Code § 59-2-103, "
+         "covering the dwelling and up to one acre of land. The rate has been flat at "
+         "55% since 1995. The model READS these yellow cells and applies them to "
+         "residential value by roll year (carry-forward past the last row); the "
+         "RESID_TAXABLE_RATIO cell on the Inputs tab overrides them when changed."),''')
 
 
 _p("inputs.py", '''    r += 2
@@ -1139,7 +1191,7 @@ _p("memo.py", '''    _mill_bullet = (
         f"A total mill levy of {mill_total:.3f} mills is assumed &mdash; {mill_ds:.3f} mills to "
         f"debt service (the governing document cap) and {mill_ops:.3f} mills to operations &amp; "
         f"maintenance."
-        + (f" The debt-service mill is &ldquo;Gallagherized&rdquo; to ~{eff_mill:.3f} effective "
+        + (f" The debt-service mill is &ldquo;adjusted&rdquo; to ~{eff_mill:.3f} effective "
            f"mills to offset the decline in the residential taxable ratio since the Service "
            f"Plan was adopted ({cfg.resid_taxable_ratio_prior:.2%} &rarr; {cfg.resid_taxable_ratio:.2%})."
            if gall else ""))''',
@@ -1214,6 +1266,70 @@ Act, Title&nbsp;17D, Chapter&nbsp;4, Utah Code. The following is a summary of th
 in the analysis:</p>''')
 
 _p("memo.py", '''Peak AV &asymp; {_money(peak_av)}''', '''Peak Taxable Value &asymp; {_money(peak_av)}''')
+
+# Utah's fixed levy caps are tight enough that a refunding can produce NEGATIVE
+# new money (see docs/utah-vs-colorado.md).  Upstream renders that as "$-914,919";
+# show it in accounting parentheses so the client memo reads correctly.
+_p("memo.py", '''def _money(x):
+    return f"${x:,.0f}"''',
+   '''def _money(x):
+    # Accounting style: negatives in parentheses.  A refunding under Utah's
+    # fixed levy caps can genuinely return less than it costs, so this is a
+    # real case for a PID rather than a defensive flourish.
+    return f"(${abs(x):,.0f})" if x < 0 else f"${x:,.0f}"''')
+
+
+# Two prose strings wrap across source lines, so the label pass cannot see them
+# whole; patch them explicitly.
+_p("report.py", '''                "Aggregate per year: market value (beginning & ending) → total assessed "
+                "value → gross & net revenue for sizing."''',
+   '''                "Aggregate per year: market value (beginning & ending) → total taxable "
+                "value → gross & net revenue for sizing."''')
+
+_p("report.py", '''    O&M revenue projection: the operations mill levy applied to total assessed
+    value, collected at the collection rate, plus the specific-ownership tax —''',
+   '''    O&M revenue projection: the operations mill levy applied to total taxable
+    value, collected at the collection rate, plus the personal property uniform fee —''')
+
+
+
+_p("report.py", '''                "certified-value adjustments → cumulative 100% lot value → assessed."], 10)''',
+   '''                "certified-value adjustments → cumulative 100% lot value → taxable "
+                "value @ the residential exemption."], 10)''')
+
+_p("report.py", '''                "Beginning market value → + new home value added to rolls → + biennial "
+                "reassessment → + certified-value adjustments → gross market value → assessed."], 10)''',
+   '''                "Beginning market value → + new home value added to rolls → + annual "
+                "reassessment → + certified-value adjustments → gross market value → "
+                "taxable value @ the residential exemption."], 10)''')
+
+_p("report.py", '''        ("note", "Biennial reassessment (residential / commercial)",''',
+   '''        ("note", f"{cfg.reassess_frequency} reassessment (residential / commercial)",''')
+
+_p("inputs.py", '''"Strict Biennial Level-of-Value", "HOLD_VALUE_FLAT"''',
+   '''"Hold Value Flat Between Reassessments", "HOLD_VALUE_FLAT"''')
+
+
+
+# ── Stale Colorado vocabulary in docstrings / section comments ───────────────
+
+_p("memo.py", '''sources & uses), but states Colorado assumptions — mill levy (governing document cap +
+Gallagher adjustment), primary residential / lot-inventory taxable ratios, the
+reassessment on odd years, capitalized interest, the 3-prong DSRF, the''',
+   '''sources & uses), but states Utah assumptions — the levy held under the
+§ 17D-4-303 cap, the 45% primary residential exemption applied to homes and to
+builder lot inventory, annual reassessment, capitalized interest, the 3-prong DSRF, the''')
+
+_p("inputs.py", '''# ── Historical Residential Exemption (Colorado residential assessment) rates — reference ─────
+# Residential taxable ratio by tax year / reassessment cycle.''',
+   '''# ── Historical Utah residential exemption rates — reference ─────────────────
+# Residential taxable ratio by tax year.''')
+
+_p("report.py", '''    Values are shown in the year the AV is created; the model collects it on the
+    Colorado lag (see Notes).''',
+   '''    Values are shown in the year the value is created; the model collects it on
+    the Utah lag — created in a calendar year, on the following 1 January roll,
+    billed that 30 November, paying debt service the next 1 March (see Notes).''')
 
 
 # ── main.py ──────────────────────────────────────────────────────────────────

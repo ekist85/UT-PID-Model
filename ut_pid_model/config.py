@@ -158,7 +158,7 @@ class ModelConfig:
 
     # ── Sizing amounts — dynamically computed from the district's future AV and
     # the resulting tax revenue (None ⇒ derive; set a value only to override).
-    #   • senior DSRF: 3-prong test (10% of par / max annual DS / 125% avg DS)
+    #   • senior DSRF: 3-prong test (10% of par / max annual net DS / 125% avg net DS)
     #   • sub par:     largest par the residual surplus repays by maturity
     #   • refunding surplus on hand / sub escrow: accumulated surplus and the
     #     outstanding subordinate balance at the refunding date
@@ -212,6 +212,10 @@ class ModelConfig:
     # "Utah Property Tax Reference" tab and keyed by ROLL / TAX year (carry-forward).
     # When present it overrides the built-in BUILDER_INVENTORY_HISTORY defaults.
     lot_inventory_rate_schedule: Optional[dict[int, float]] = None
+    # Editable residential (Utah) rate table, read back from the "Historical Residential Exemption
+    # Rates" tab and keyed by ROLL / TAX year (carry-forward).  When present it
+    # overrides the built-in RESIDENTIAL_EXEMPTION_HISTORY defaults for the residential ratio.
+    residential_rate_schedule: Optional[dict[int, float]] = None
 
     # Home-sales pacing stress: fraction of the forecast absorption pace applied
     # to the development (1.0 = base; 0.5 = sell at 50% of pace, stretching
@@ -296,20 +300,24 @@ class ModelConfig:
         """
         Residential (Utah) taxable ratio for a collection year.
 
-        Precedence: an explicit ``residential_assessment_schedule`` wins; then the
-        Inputs-page ``resid_taxable_ratio`` whenever it differs from the statutory
-        45% exemption (so overriding the cell actually changes the model); then
-        the statutory table for the ROLL year (= collection year − 1).
+        Precedence: an explicit collection-year ``residential_assessment_schedule``
+        wins; then the Inputs-page ``resid_taxable_ratio`` whenever it differs from
+        the statutory 45% exemption (so overriding that cell actually changes the
+        model); then the editable ROLL-year ``residential_rate_schedule`` read back
+        from the "Utah Property Tax Reference" tab; otherwise the statutory table.
 
-        Utah's exemption has been flat at 55% since 1995, so the table and the
-        input agree unless someone deliberately changes one.  Colorado needs the
-        table because its ratio moves year to year.
+        Utah's exemption has been flat at 55% since 1995, so all four agree unless
+        someone deliberately changes one.  Colorado needs the table on top because
+        its ratio moves every reappraisal cycle.
         """
         if self.residential_assessment_schedule:
             return _schedule_lookup(
                 self.residential_assessment_schedule, collection_year, self.resid_taxable_ratio)
         if abs(self.resid_taxable_ratio - DEFAULT_RESID_TAXABLE_RATIO) > 1e-12:
             return self.resid_taxable_ratio
+        if self.residential_rate_schedule:
+            return _schedule_lookup(
+                self.residential_rate_schedule, collection_year - 1, self.resid_taxable_ratio)
         return residential_taxable_ratio_for(collection_year - 1)
 
     def lot_inventory_ratio(self, roll_year: int) -> float:

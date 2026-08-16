@@ -231,11 +231,11 @@ class DeveloperProjections:
             if v and rate:
                 trued[R] = v / rate
 
-        # The FIRST historical year is the baseline — its certified value is taken
-        # as-is (its adjustment CELL stays 0).  The amount that lifts the running
-        # cumulative to each trued-up value (including the first-year baseline "extra")
-        # is amortized so the cumulative clears to $0 once the lots are built out.
-        first_trued = min(trued) if trued else None
+        # Every trued-up year (including the FIRST historical roll) carries a visible
+        # adjustment in its Adjustments cell — the amount that lifts the running
+        # cumulative up to that year's trued-up 100% lot value.  The full recognition
+        # (first-year plug included) is amortized so the cumulative clears to $0 once
+        # the lots are built out.
         total_recognition = 0.0
         cum = 0.0
         for y in range(first, (max(trued) + 1) if trued else first):
@@ -256,16 +256,15 @@ class DeveloperProjections:
                      if lot_delivery_years and net_years else [])
         per_amort = total_recognition / len(amort_win) if amort_win else 0.0
 
+        first_trued = min(trued) if trued else None
         rows, cum = [], 0.0
         for y in range(first, horizon_end + 1):
             new_lots = l2h(y)
             lots_to_homes = -l2h(y - 1)
             net = new_lots + lots_to_homes
             adj = 0.0
-            if y == first_trued:
-                cum = trued[y]                       # baseline, no adjustment
-            elif y in trued:
-                adj = trued[y] - (cum + net)
+            if y in trued:
+                adj = trued[y] - (cum + net)         # visible plug to trued-up value
                 cum += net + adj
             elif y in amort_win:
                 adj = -per_amort
@@ -278,6 +277,9 @@ class DeveloperProjections:
                 "lots_to_homes": lots_to_homes, "net": net, "adjustment": adj,
                 "cumulative": cum, "ratio": ratio, "assessed": cum * ratio,
                 "certified": y in trued,   # taxable value came from the inputs
+                # The first baseline true-up shows its adjustment but is NOT highlighted;
+                # the highlight marks the recognition/amortization plugs only.
+                "first_trued": y == first_trued,
             })
         return rows
 
