@@ -446,6 +446,7 @@ def _build_summary_av_sheet(ws, cfg, dev, sm):
              ("trust", "− Senior\nTrustee", 11),
              ("subtrust", "− Sub\nTrustee", 11),
              ("om", "− District\nAdmin", 11),
+             ("omexp", "− District\nO&M", 11),
              ("net", "Net Revenue\n(senior sizing)", 15)]
 
     ws.column_dimensions["A"].width = 10
@@ -496,7 +497,8 @@ def _build_summary_av_sheet(ws, cfg, dev, sm):
             "commav": r.commercial_av, "stateav": r.state_av, "exempt": -cfg.exempt_value,
             "total": r.total_av, "mill": r.mill_revenue, "uniform_fee": r.uniform_fee_revenue,
             "gross": r.mill_revenue + r.uniform_fee_revenue, "treas": treas,
-            "trust": trust, "subtrust": subtrust, "om": om, "net": r.net_senior_revenue,
+            "trust": trust, "subtrust": subtrust, "om": om,
+            "omexp": -r.om_expense, "net": r.net_senior_revenue,
         }
         _cell(ws, rw, 1, r.collection_year - 1, fill, align=_CENTER)
         _cell(ws, rw, 2, r.collection_year, fill, align=_CENTER)
@@ -1229,23 +1231,32 @@ def _build_coverage_sheet(ws, cfg, sm, senior, refunding_bond=None):
 # ── Operations & Maintenance (O&M) revenue projection ─────────────────────────
 def _build_om_sheet(ws, cfg, sm):
     """
-    O&M revenue projection: the operations mill levy applied to total taxable
-    value, collected at the collection rate, plus the personal property uniform fee —
-    the total available each year for operations & maintenance.
+    O&M revenue and expense: the operations mill levy applied to total taxable
+    value, collected at the collection rate, plus the personal property uniform
+    fee — the total available each year for operations & maintenance — against
+    the district's modelled O&M expense, and the surplus or deficit between
+    them.  A Utah PID usually runs no operations levy, so the deficit shown here
+    is what the debt-service levy is carrying.
     """
     ops_mill = cfg.mill_levy_ops_target
     coll = cfg.tax_collect_mill_prc
-    _title(ws, [cfg.pid_name, "Operations & Maintenance (O&M) Revenue Projection",
-                f"Operations mill levy {ops_mill:.3f} mills @ {coll:.1%} collection"], 6)
+    _title(ws, [cfg.pid_name, "Operations & Maintenance (O&M) Revenue and Expense",
+                f"Operations mill levy {ops_mill:.3f} mills @ {coll:.1%} collection"
+                + (f"  ·  O&M expense ${cfg.om_expense:,.0f} base, inflating at "
+                   f"{cfg.om_growth_rate:.1%}" if cfg.om_expense else
+                   "  ·  no O&M expense entered")], 8)
     hdrs = [(1, "Collection\nYear", 12), (2, "Total\nTaxable Value", 16),
             (3, "Operations\nMill Levy", 13),
             (4, f"Total Collections\n@ {coll:.1%}", 16),
             (5, f"Uniform Fee\n@ {cfg.uniform_fee_prc:.0%}", 14),
-            (6, "Total Available\nfor O&M", 16)]
+            (6, "Total Available\nfor O&M", 16),
+            (7, "− O&M\nExpense", 14),
+            (8, "O&M Surplus /\n(Deficit)", 16)]
     for col, lbl, w in hdrs:
         _hdr(ws, 5, col, lbl, w)
 
     tot_coll = tot_uniform_fee = tot_avail = 0.0
+    tot_om = tot_net_om = 0.0
     for i, r in enumerate(sm.rows):
         rw = 6 + i
         fill = _GRAY if i % 2 else _WHITE
@@ -1256,13 +1267,18 @@ def _build_om_sheet(ws, cfg, sm):
                    else cfg.uniform_fee_prc)
         uniform_fee = collections * so_rate
         avail = collections + uniform_fee
+        om_expense = r.om_expense
+        net_om = avail - om_expense
         tot_coll += collections; tot_uniform_fee += uniform_fee; tot_avail += avail
+        tot_om += om_expense; tot_net_om += net_om
         _cell(ws, rw, 1, r.collection_year, fill, align=_CENTER)
         _cell(ws, rw, 2, round(r.total_av, 0) or None, fill, fmt=_DOLLAR)
         _cell(ws, rw, 3, ops_mill, fill, fmt='0.000', align=_CENTER)
         _cell(ws, rw, 4, round(collections, 0) or None, fill, fmt=_DOLLAR)
         _cell(ws, rw, 5, round(uniform_fee, 0) or None, fill, fmt=_DOLLAR)
         _cell(ws, rw, 6, round(avail, 0) or None, fill, fmt=_DOLLAR)
+        _cell(ws, rw, 7, -round(om_expense, 0) or None, fill, fmt=_DOLLAR)
+        _cell(ws, rw, 8, round(net_om, 0) or None, fill, font=_BOLD, fmt=_DOLLAR)
 
     rw = 6 + len(sm.rows)
     _cell(ws, rw, 1, "Total", _TOTAL, font=_TOTAL_FONT, align=_CENTER)
@@ -1271,6 +1287,8 @@ def _build_om_sheet(ws, cfg, sm):
     _cell(ws, rw, 4, round(tot_coll, 0) or None, _TOTAL, font=_TOTAL_FONT, fmt=_DOLLAR)
     _cell(ws, rw, 5, round(tot_uniform_fee, 0) or None, _TOTAL, font=_TOTAL_FONT, fmt=_DOLLAR)
     _cell(ws, rw, 6, round(tot_avail, 0) or None, _TOTAL, font=_TOTAL_FONT, fmt=_DOLLAR)
+    _cell(ws, rw, 7, -round(tot_om, 0) or None, _TOTAL, font=_TOTAL_FONT, fmt=_DOLLAR)
+    _cell(ws, rw, 8, round(tot_net_om, 0) or None, _TOTAL, font=_TOTAL_FONT, fmt=_DOLLAR)
     ws.freeze_panes = "A6"
 
 
@@ -1476,6 +1494,11 @@ def _build_notes_sheet(ws, cfg, senior, sub_result=None, refunding_result=None):
         ("note", "Mill-levy collection / specific-ownership tax",
             f"{_pct(cfg.tax_collect_mill_prc)} / {_pct(cfg.uniform_fee_prc)}"),
         ("note", "County collection cost", _pct(cfg.county_collection_fee)),
+        ("note", "District administration (base / growth)",
+            f"${cfg.admin_cost:,.0f} / {_pct(cfg.admin_growth_rate)}"),
+        ("note", "District O&M expense (base / growth)",
+            (f"${cfg.om_expense:,.0f} / {_pct(cfg.om_growth_rate)}"
+             if cfg.om_expense else "none entered")),
         ("note", "Home price inflation", _pct(cfg.inflation_rate)),
         ("SECTION", "Bond Structure", ""),
         ("note", "Senior coupon / coverage",

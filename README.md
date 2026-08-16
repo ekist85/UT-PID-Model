@@ -167,6 +167,28 @@ sm = SummaryModel(cfg, dev.build(cfg)).build()
 python -c "import main; main.run_model(inputs_path='my_inputs.xlsx')"
 ```
 
+### District costs on the Inputs page
+
+Four rows under **District Costs** come off pledged revenue before debt service:
+
+| Row | Range name | Default |
+|---|---|---:|
+| Annual District Administration | `ADMIN_COST` | $53,060 |
+| District Administration Growth Rate | `ADMIN_GROWTH_RATE` | 2.0% |
+| Starting O&M Expense | `OM_EXPENSE` | $0 |
+| O&M Expense Growth Rate | `OM_GROWTH_RATE` | 3.0% |
+
+Both bases start in `DISTRICT_COST_START_YEAR` (blank ⇒ two years after
+closing, the first year with a full year of collections) and inflate from there.
+
+**O&M defaults to zero** — an operating budget is a district-specific number and
+the model will not assume one. Enter a starting expense and it flows through
+sizing: it is netted from the revenue available to the **senior and the
+subordinate lien**, appears as its own column on **Summary - Detail**, and shows
+against operations revenue on the **O&M Revenue** tab as a surplus/(deficit). On
+the reference deal $40,000 of starting O&M at 3.5% costs about $690,000 of
+senior par, $152,000 of subordinate par, and $631,000 of reimbursement.
+
 Deliverables land in a **`reimbursement analysis`** folder beside the inputs
 workbook:
 

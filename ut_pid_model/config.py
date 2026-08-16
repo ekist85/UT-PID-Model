@@ -287,6 +287,15 @@ class ModelConfig:
     admin_cost: float = 53_060         # ADMIN_COST (base year)
     admin_cost_av_limit: float = 0     # ADMIN_COST_AV_LIMIT
     admin_growth_rate: float = 0.02    # ADMIN_GROWTH_RATE (inflates the base)
+    # District operations & maintenance — landscaping, parks and trails, snow
+    # removal, street lighting, utilities on the district improvements.  A Utah
+    # PID rarely carries a separate operations levy, so this is paid out of the
+    # same pledged revenue as debt service and comes off the top: it is netted
+    # from the revenue available to the senior AND the subordinate lien.
+    # Defaults to zero — an operating budget is a district-specific number, not
+    # something to assume.
+    om_expense: float = 0.0            # OM_EXPENSE (base year, $ per year)
+    om_growth_rate: float = 0.03       # OM_GROWTH_RATE (inflates the base)
     # First collection year that carries district costs — administration and the
     # trustee fees.  None ⇒ two years after closing: the first roll set with the
     # bonds outstanding is billed that November, so year 2 is the first with a
@@ -364,6 +373,22 @@ class ModelConfig:
             return 0.0, 0.0, 0.0
         admin = self.admin_cost * (1 + self.admin_growth_rate) ** (collection_year - start)
         return admin, self.trustee_fee, self.trustee_fee_sub
+
+    def om_expense_for(self, collection_year: int) -> float:
+        """
+        District operations & maintenance charged against pledged revenue in
+        ``collection_year``.
+
+        Nothing is charged before ``district_cost_start_year`` — the same start
+        the administration and trustee fees use — and from then on the base
+        inflates at ``om_growth_rate``.
+        """
+        if not self.om_expense:
+            return 0.0
+        start = self.district_cost_start_year or (self.delivery.year + 2)
+        if collection_year < start:
+            return 0.0
+        return self.om_expense * (1 + self.om_growth_rate) ** (collection_year - start)
 
     @property
     def mill_levy_cap(self) -> float:

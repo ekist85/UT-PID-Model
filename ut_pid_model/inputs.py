@@ -126,6 +126,8 @@ _SPECS: list[tuple] = [
     ("District Costs", "Annual District Administration", "ADMIN_COST", "admin_cost", "float", "$ per year, charged against pledged revenue"),
     ("District Costs", "District Administration Growth Rate", "ADMIN_GROWTH_RATE", "admin_growth_rate", "pct", "annual inflation on the administration base"),
     ("District Costs", "District Administration Taxable Value Limit", "ADMIN_COST_AV_LIMIT", "admin_cost_av_limit", "float", "$ — above this taxable value the charge stops; 0 ⇒ no limit"),
+    ("District Costs", "Starting O&M Expense", "OM_EXPENSE", "om_expense", "float", "$ per year of district operations & maintenance, netted from the revenue available to both liens"),
+    ("District Costs", "O&M Expense Growth Rate", "OM_GROWTH_RATE", "om_growth_rate", "pct", "annual inflation on the O&M base"),
     ("District Costs", "First Year District Costs Are Charged", "DISTRICT_COST_START_YEAR", "district_cost_start_year", "int", "blank ⇒ two years after closing"),
 ]
 

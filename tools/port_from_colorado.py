@@ -1311,6 +1311,181 @@ _p("inputs.py", '''"Strict Biennial Level-of-Value", "HOLD_VALUE_FLAT"''',
 
 
 
+# ── District operations & maintenance expense ────────────────────────────────
+# Colorado's template exposes a single "O&M Carveout" (renamed here to the
+# district administration line).  A Utah PID typically has no separate
+# operations levy, so its operating budget has to be funded out of the same
+# pledged revenue that services the bonds — which makes the O&M expense a real
+# input to sizing, not a footnote.  Two rows: a starting expense and the
+# inflation that grows it.
+#
+# Unlike the administration carveout, this is netted from the revenue available
+# to BOTH liens.  The subordinate lien's own revenue is measured as
+# `net_sub_revenue - net_senior_revenue`, so a cost netted from the senior side
+# alone is handed straight to the sub — which would make an O&M expense *raise*
+# subordinate capacity.  Money the district actually spends is available to
+# neither bond.
+
+_p("config.py", '''    admin_growth_rate: float = 0.02    # ADMIN_GROWTH_RATE (inflates the base)''',
+   '''    admin_growth_rate: float = 0.02    # ADMIN_GROWTH_RATE (inflates the base)
+    # District operations & maintenance — landscaping, parks and trails, snow
+    # removal, street lighting, utilities on the district improvements.  A Utah
+    # PID rarely carries a separate operations levy, so this is paid out of the
+    # same pledged revenue as debt service and comes off the top: it is netted
+    # from the revenue available to the senior AND the subordinate lien.
+    # Defaults to zero — an operating budget is a district-specific number, not
+    # something to assume.
+    om_expense: float = 0.0            # OM_EXPENSE (base year, $ per year)
+    om_growth_rate: float = 0.03       # OM_GROWTH_RATE (inflates the base)''')
+
+_p("config.py", '''    @property
+    def mill_levy_cap(self) -> float:''',
+   '''    def om_expense_for(self, collection_year: int) -> float:
+        """
+        District operations & maintenance charged against pledged revenue in
+        ``collection_year``.
+
+        Nothing is charged before ``district_cost_start_year`` — the same start
+        the administration and trustee fees use — and from then on the base
+        inflates at ``om_growth_rate``.
+        """
+        if not self.om_expense:
+            return 0.0
+        start = self.district_cost_start_year or (self.delivery.year + 2)
+        if collection_year < start:
+            return 0.0
+        return self.om_expense * (1 + self.om_growth_rate) ** (collection_year - start)
+
+    @property
+    def mill_levy_cap(self) -> float:''')
+
+_p("summary.py", '''    net_senior_revenue: float      # AX
+    net_sub_revenue: float         # BO''',
+   '''    net_senior_revenue: float      # AX
+    net_sub_revenue: float         # BO
+    om_expense: float = 0.0        # district O&M, netted from both liens''')
+
+_p("summary.py", '''            collection_fee = mill_revenue * cfg.county_collection_fee
+            admin_cost, trustee_fee, trustee_fee_sub = cfg.district_costs(collect)''',
+   '''            collection_fee = mill_revenue * cfg.county_collection_fee
+            admin_cost, trustee_fee, trustee_fee_sub = cfg.district_costs(collect)
+            # District O&M comes off the top — see ModelConfig.om_expense_for.
+            om_expense = cfg.om_expense_for(collect)''')
+
+_p("summary.py", '''            net_senior_revenue = (
+                mill_revenue + uniform_fee - collection_fee - trustee_fee - admin_cost
+            )''',
+   '''            net_senior_revenue = (
+                mill_revenue + uniform_fee - collection_fee - trustee_fee - admin_cost
+                - om_expense
+            )''')
+
+_p("summary.py", '''            net_sub_revenue = mill_revenue + uniform_fee - trustee_fee_sub''',
+   '''            net_sub_revenue = mill_revenue + uniform_fee - trustee_fee_sub - om_expense''')
+
+_p("summary.py", '''                net_sub_revenue=net_sub_revenue,
+            )''',
+   '''                net_sub_revenue=net_sub_revenue,
+                om_expense=om_expense,
+            )''')
+
+_p("inputs.py", '''    ("District Costs", "First Year District Costs Are Charged", "DISTRICT_COST_START_YEAR",''',
+   '''    ("District Costs", "Starting O&M Expense", "OM_EXPENSE", "om_expense", "float", "$ per year of district operations & maintenance, netted from the revenue available to both liens"),
+    ("District Costs", "O&M Expense Growth Rate", "OM_GROWTH_RATE", "om_growth_rate", "pct", "annual inflation on the O&M base"),
+    ("District Costs", "First Year District Costs Are Charged", "DISTRICT_COST_START_YEAR",''')
+
+_p("report.py", '''             ("om", "− District\\nAdmin", 11),
+             ("net", "Net Revenue\\n(senior sizing)", 15)]''',
+   '''             ("om", "− District\\nAdmin", 11),
+             ("omexp", "− District\\nO&M", 11),
+             ("net", "Net Revenue\\n(senior sizing)", 15)]''')
+
+_p("report.py", '''            "trust": trust, "subtrust": subtrust, "om": om, "net": r.net_senior_revenue,''',
+   '''            "trust": trust, "subtrust": subtrust, "om": om,
+            "omexp": -r.om_expense, "net": r.net_senior_revenue,''')
+
+
+
+# The O&M tab showed only the operations-levy revenue.  Now that the district
+# carries a modelled O&M expense, show it alongside — and the surplus/(deficit),
+# which is the number that says whether the operations levy actually covers the
+# operating budget or whether the debt levy is carrying it.
+_p("report.py", '''    ops_mill = cfg.mill_levy_ops_target
+    coll = cfg.tax_collect_mill_prc
+    _title(ws, [cfg.pid_name, "Operations & Maintenance (O&M) Revenue Projection",
+                f"Operations mill levy {ops_mill:.3f} mills @ {coll:.1%} collection"], 6)
+    hdrs = [(1, "Collection\\nYear", 12), (2, "Total\\nTaxable Value", 16),
+            (3, "Operations\\nMill Levy", 13),
+            (4, f"Total Collections\\n@ {coll:.1%}", 16),
+            (5, f"Uniform Fee\\n@ {cfg.uniform_fee_prc:.0%}", 14),
+            (6, "Total Available\\nfor O&M", 16)]''',
+   '''    ops_mill = cfg.mill_levy_ops_target
+    coll = cfg.tax_collect_mill_prc
+    _title(ws, [cfg.pid_name, "Operations & Maintenance (O&M) Revenue and Expense",
+                f"Operations mill levy {ops_mill:.3f} mills @ {coll:.1%} collection"
+                + (f"  ·  O&M expense ${cfg.om_expense:,.0f} base, inflating at "
+                   f"{cfg.om_growth_rate:.1%}" if cfg.om_expense else
+                   "  ·  no O&M expense entered")], 8)
+    hdrs = [(1, "Collection\\nYear", 12), (2, "Total\\nTaxable Value", 16),
+            (3, "Operations\\nMill Levy", 13),
+            (4, f"Total Collections\\n@ {coll:.1%}", 16),
+            (5, f"Uniform Fee\\n@ {cfg.uniform_fee_prc:.0%}", 14),
+            (6, "Total Available\\nfor O&M", 16),
+            (7, "− O&M\\nExpense", 14),
+            (8, "O&M Surplus /\\n(Deficit)", 16)]''')
+
+_p("report.py", '''    tot_coll = tot_uniform_fee = tot_avail = 0.0
+    for i, r in enumerate(sm.rows):''',
+   '''    tot_coll = tot_uniform_fee = tot_avail = 0.0
+    tot_om = tot_net_om = 0.0
+    for i, r in enumerate(sm.rows):''')
+
+_p("report.py", '''        tot_coll += collections; tot_uniform_fee += uniform_fee; tot_avail += avail''',
+   '''        om_expense = r.om_expense
+        net_om = avail - om_expense
+        tot_coll += collections; tot_uniform_fee += uniform_fee; tot_avail += avail
+        tot_om += om_expense; tot_net_om += net_om''')
+
+_p("report.py", '''        _cell(ws, rw, 6, round(avail, 0) or None, fill, fmt=_DOLLAR)
+
+    rw = 6 + len(sm.rows)''',
+   '''        _cell(ws, rw, 6, round(avail, 0) or None, fill, fmt=_DOLLAR)
+        _cell(ws, rw, 7, -round(om_expense, 0) or None, fill, fmt=_DOLLAR)
+        _cell(ws, rw, 8, round(net_om, 0) or None, fill, font=_BOLD, fmt=_DOLLAR)
+
+    rw = 6 + len(sm.rows)''')
+
+_p("report.py", '''    _cell(ws, rw, 6, round(tot_avail, 0) or None, _TOTAL, font=_TOTAL_FONT, fmt=_DOLLAR)
+    ws.freeze_panes = "A6"''',
+   '''    _cell(ws, rw, 6, round(tot_avail, 0) or None, _TOTAL, font=_TOTAL_FONT, fmt=_DOLLAR)
+    _cell(ws, rw, 7, -round(tot_om, 0) or None, _TOTAL, font=_TOTAL_FONT, fmt=_DOLLAR)
+    _cell(ws, rw, 8, round(tot_net_om, 0) or None, _TOTAL, font=_TOTAL_FONT, fmt=_DOLLAR)
+    ws.freeze_panes = "A6"''')
+
+_p("report.py", '''        ("note", "County collection cost", _pct(cfg.county_collection_fee)),''',
+   '''        ("note", "County collection cost", _pct(cfg.county_collection_fee)),
+        ("note", "District administration (base / growth)",
+            f"${cfg.admin_cost:,.0f} / {_pct(cfg.admin_growth_rate)}"),
+        ("note", "District O&M expense (base / growth)",
+            (f"${cfg.om_expense:,.0f} / {_pct(cfg.om_growth_rate)}"
+             if cfg.om_expense else "none entered")),''')
+
+
+
+_p("report.py", '''    O&M revenue projection: the operations mill levy applied to total taxable
+    value, collected at the collection rate, plus the personal property uniform fee —
+    the total available each year for operations & maintenance.
+    """''',
+   '''    O&M revenue and expense: the operations mill levy applied to total taxable
+    value, collected at the collection rate, plus the personal property uniform
+    fee — the total available each year for operations & maintenance — against
+    the district's modelled O&M expense, and the surplus or deficit between
+    them.  A Utah PID usually runs no operations levy, so the deficit shown here
+    is what the debt-service levy is carrying.
+    """''')
+
+
+
 # ── Stale Colorado vocabulary in docstrings / section comments ───────────────
 
 _p("memo.py", '''sources & uses), but states Colorado assumptions — mill levy (governing document cap +

@@ -48,6 +48,7 @@ class SummaryRow:
     uniform_fee_revenue: float  # AJ
     net_senior_revenue: float      # AX
     net_sub_revenue: float         # BO
+    om_expense: float = 0.0        # district O&M, netted from both liens
 
 
 class SummaryModel:
@@ -138,15 +139,18 @@ class SummaryModel:
             #     before the district is up and running)
             collection_fee = mill_revenue * cfg.county_collection_fee
             admin_cost, trustee_fee, trustee_fee_sub = cfg.district_costs(collect)
+            # District O&M comes off the top — see ModelConfig.om_expense_for.
+            om_expense = cfg.om_expense_for(collect)
             if cfg.admin_cost_av_limit and total_av > cfg.admin_cost_av_limit:
                 admin_cost = 0.0
             net_senior_revenue = (
                 mill_revenue + uniform_fee - collection_fee - trustee_fee - admin_cost
+                - om_expense
             )
 
             # Net revenue available for SUBORDINATE lien debt service (BO):
             #   mill + Uniform Fee - subordinate trustee fee   (no treasurer fee netted here)
-            net_sub_revenue = mill_revenue + uniform_fee - trustee_fee_sub
+            net_sub_revenue = mill_revenue + uniform_fee - trustee_fee_sub - om_expense
 
             row = SummaryRow(
                 collection_year=collect,
@@ -161,6 +165,7 @@ class SummaryModel:
                 uniform_fee_revenue=uniform_fee,
                 net_senior_revenue=net_senior_revenue,
                 net_sub_revenue=net_sub_revenue,
+                om_expense=om_expense,
             )
             self.rows.append(row)
             self._by_year[collect] = row

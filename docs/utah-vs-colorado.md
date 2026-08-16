@@ -185,9 +185,38 @@ closing, which is the first roll set with the bonds outstanding and therefore
 the first year with a full year of collections to charge against. Both bring the
 model onto the reference workbook.
 
+**District O&M is a separate, modelled expense.** Because a Utah PID usually has
+no operations levy, whatever the district does spend on operations —
+landscaping, parks and trails, snow removal, street lighting, utilities on the
+district improvements — comes out of the same pledged revenue that services the
+bonds. `OM_EXPENSE` on the Inputs page takes a starting annual budget and
+`OM_GROWTH_RATE` inflates it, on the same start year as the other district
+costs. It defaults to **zero**: an operating budget is a district-specific
+number, and the model should not invent one.
+
+It is netted from the revenue available to **both** liens, which is the one
+place this differs mechanically from the administration carveout above. The
+subordinate lien's own revenue is measured as `net_sub_revenue -
+net_senior_revenue`, so a cost netted from the senior side alone is handed
+straight to the subordinate — an O&M expense charged that way would *raise*
+subordinate capacity. Money the district actually spends is available to
+neither bond.
+
+That asymmetry is worth noting about the inherited administration line: it is
+netted from the senior side only, so the $53,060 base does move to the
+subordinate lien rather than leaving the pledge. It is calibrated that way
+against the reference workbook and is left alone here, but if the intent is that
+administration also comes off the top, it should move to the same treatment as
+`om_expense`.
+
+The O&M tab now shows revenue, expense and the surplus/(deficit) between them —
+with no operations levy, that deficit is what the debt-service levy is carrying.
+
 *Code:* `ModelConfig.admin_cost`, `ModelConfig.admin_growth_rate`,
 `ModelConfig.district_cost_start_year`, `ModelConfig.district_costs()` (used by
-both `SummaryModel.build` and the report, so the two cannot disagree).
+both `SummaryModel.build` and the report, so the two cannot disagree);
+`ModelConfig.om_expense`, `ModelConfig.om_growth_rate`,
+`ModelConfig.om_expense_for()`, `SummaryRow.om_expense`.
 
 ---
 

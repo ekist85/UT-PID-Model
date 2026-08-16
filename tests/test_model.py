@@ -454,6 +454,108 @@ def test_subordinate_first_coupon_is_a_stub_from_the_dated_date(built, senior):
     assert yf[first_pay + 1] == pytest.approx(1.0)
 
 
+# ── District O&M expense ─────────────────────────────────────────────────────
+
+def _sized(cfg):
+    """(senior, sub_par, sm) for a config — used by the O&M sensitivity tests."""
+    dev = viridian_farm_projections().build(cfg)
+    sm = SummaryModel(cfg, dev).build()
+    calls = CallProvisions(cfg.premium_call_date, cfg.par_call_date,
+                           cfg.premium_call_price)
+    senior = size_senior_with_dynamic_dsrf(
+        SeniorLienSizer(cfg, sm),
+        name="Senior", rate=cfg.senior_interest_rate, coverage=cfg.dsc_senior,
+        delivery=cfg.delivery, first_principal_year=cfg.senior_first_principal_year,
+        final_year=cfg.senior_final_year, capi_end_year=cfg.capi_end_date.year,
+        call_provisions=calls)
+    sf = SurplusFund(cfg, sm).build(senior, None, cfg.first_collection_year,
+                                    senior.final_year)
+    sub_par = SubordinateLien(cfg, sm).size_par(
+        senior, cfg.first_collection_year, senior.final_year, surplus_fund=sf)
+    return senior, sub_par, sm
+
+
+def test_om_expense_defaults_to_zero_and_changes_nothing():
+    """An operating budget is district-specific; the model must not invent one."""
+    cfg = ModelConfig()
+    assert cfg.om_expense == 0.0
+    assert all(r.om_expense == 0.0 for r in SummaryModel(
+        cfg, viridian_farm_projections().build(cfg)).build().rows)
+
+
+def test_om_expense_starts_with_the_other_district_costs_and_inflates():
+    cfg = ModelConfig()
+    cfg.om_expense = 40_000
+    cfg.om_growth_rate = 0.035
+    start = cfg.district_cost_start_year or (cfg.delivery.year + 2)
+    assert cfg.om_expense_for(start - 1) == 0.0
+    assert cfg.om_expense_for(start) == pytest.approx(40_000)
+    assert cfg.om_expense_for(start + 10) == pytest.approx(40_000 * 1.035 ** 10)
+
+
+def test_om_expense_is_netted_from_both_liens():
+    """The sub lien's own revenue is `net_sub - net_senior`, so a cost netted
+    from the senior side alone would be handed to the sub — an O&M expense would
+    then *raise* subordinate capacity.  It has to come off the top."""
+    base = SummaryModel(ModelConfig(),
+                        viridian_farm_projections().build(ModelConfig())).build()
+    cfg = ModelConfig()
+    cfg.om_expense = 40_000
+    with_om = SummaryModel(cfg, viridian_farm_projections().build(cfg)).build()
+    year = 2035
+    charge = with_om.row(year).om_expense
+    assert charge > 0
+    assert (base.net_senior_revenue(year) - with_om.net_senior_revenue(year)
+            == pytest.approx(charge))
+    assert (base.net_sub_revenue(year) - with_om.net_sub_revenue(year)
+            == pytest.approx(charge))
+
+
+def test_om_expense_reduces_both_senior_and_subordinate_capacity():
+    cfg_om = ModelConfig()
+    cfg_om.om_expense = 40_000
+    senior_0, sub_0, _ = _sized(ModelConfig())
+    senior_om, sub_om, _ = _sized(cfg_om)
+    assert senior_om.par_amount < senior_0.par_amount
+    assert sub_om < sub_0
+
+
+def test_inputs_workbook_carries_the_om_expense_rows(tmp_path):
+    import openpyxl
+    from ut_pid_model import load_inputs_workbook, write_inputs_workbook
+    path = write_inputs_workbook(output_path=str(tmp_path / "inputs.xlsx"))
+    wb = openpyxl.load_workbook(path)
+    ws = wb["Inputs"]
+    cells = {}
+    for row in ws.iter_rows(min_row=5, max_col=4):
+        if row[3].value in ("OM_EXPENSE", "OM_GROWTH_RATE"):
+            cells[row[3].value] = row[2]
+    assert set(cells) == {"OM_EXPENSE", "OM_GROWTH_RATE"}
+    cells["OM_EXPENSE"].value = 40_000
+    cells["OM_GROWTH_RATE"].value = 0.035
+    wb.save(path)
+    cfg, _dev = load_inputs_workbook(path)
+    assert cfg.om_expense == pytest.approx(40_000)
+    assert cfg.om_growth_rate == pytest.approx(0.035)
+
+
+def test_om_tab_shows_expense_against_revenue(deliverables):
+    import openpyxl
+    out, _ = deliverables
+    ws = openpyxl.load_workbook(out / "ut_pid_model_output.xlsx")["O&M Revenue"]
+    hdrs = [ws.cell(row=5, column=c).value for c in range(1, 9)]
+    assert "− O&M\nExpense" in hdrs
+    assert "O&M Surplus /\n(Deficit)" in hdrs
+
+
+def test_summary_detail_shows_the_om_column(deliverables):
+    import openpyxl
+    out, _ = deliverables
+    ws = openpyxl.load_workbook(out / "ut_pid_model_output.xlsx")["Summary - Detail"]
+    hdrs = [c.value for c in ws[5]]
+    assert "− District\nO&M" in hdrs
+
+
 def test_workbook_carries_no_colorado_labels(deliverables):
     import openpyxl
     out, _ = deliverables
