@@ -92,10 +92,14 @@ fails and writes nothing, rather than quietly emitting a Colorado-flavoured Utah
 model. `tests/test_model.py::test_port_is_up_to_date_with_colorado` fails when
 the Colorado checkout has moved ahead.
 
-**Currently pinned to Colorado `ba72e6b`** ("Add a subordinate lien to the
-refunding"). Colorado has commits beyond it — the Series C cash-flow bonds
-(`9cd959e`, `78ae56b`) — that are deliberately *not* ported yet, so check out
-`ba72e6b` in the Colorado repo before running the port or the `--check` test.
+**Currently synced to Colorado `a5d8c31`** (branch head). Colorado's optional
+**Series C** third lien ports across as code but is carried **inert**: the
+`SIZE_SERIES_C` toggle stays `"No"` and its rows are kept off the Utah Inputs
+template. Series C is sized against a *separate* assessment that reassesses the
+created value at its own rate; whether a Utah PID may levy against a second
+assessment on the same property is a statutory question this model has not
+worked through, and an untested toggle in a client-facing template is worse than
+no toggle. Turning it on is a one-line change once that authority is settled.
 
 Two upstream fixes ride in the patch set and are worth pushing back to
 `co_metro_model` (a third — flooring the solved subordinate par instead of
@@ -183,6 +187,13 @@ Four rows under **District Costs** come off pledged revenue before debt service:
 Both bases start in `DISTRICT_COST_START_YEAR` (blank ⇒ two years after
 closing, the first year with a full year of collections) and inflate from there.
 
+Two more rows worth knowing about: **`PROJECTION_YEARS`** (Tax & Valuation,
+default 40) sets how far the development, taxable-value, revenue and summary
+tabs project from delivery — it floors at the longest bond maturity, so it can
+never truncate the revenue a bond sizes against — and **`DEVELOPER_CONTRIBUTION`**
+(default $0) adds developer cash as a source of funds, applied to the senior
+lien, the subordinate lien, or proportionally by par.
+
 **O&M defaults to zero** — an operating budget is a district-specific number and
 the model will not assume one. Enter a starting expense and it flows through
 sizing: it is netted from the revenue available to the **senior and the
@@ -194,7 +205,8 @@ senior par, $152,000 of subordinate par, and $631,000 of reimbursement.
 Deliverables land in a **`reimbursement analysis`** folder beside the inputs
 workbook:
 
-* `ut_pid_model_output.xlsx` — model view. Tabs: **Summary - Light**,
+* `<date> - Reimbursement Analysis - <district> - <N> Lots - Tierra Financial
+  Advisors.xlsx` — model view. Tabs: **Summary - Light**,
   **Summary - Detail**, **Builder Lot Inventory Value**, **Residential Value**,
   **Development Projections**, Sources & Uses – First, Senior Lien DS – First,
   Subordinate Lien, Senior Surplus Fund, CAPI Fund – First, O&M Revenue,
@@ -209,7 +221,7 @@ workbook:
   annual reassessment → adjustments → gross market value → taxable value).
   The Summary tabs and the bond sizing read from them, so the presentation and
   the arithmetic cannot disagree.
-* `ut_pid_forecast_exhibits.xlsx` — CPA-style forecast exhibits for the base case
+* `… - Forecast Exhibits.xlsx` — CPA-style forecast exhibits for the base case
   and two development stress scenarios:
   * **Exhibit A** — Base Case (100% of forecast absorption pace)
   * **Exhibit B** — Alternative Scenario (80% pace)
@@ -219,7 +231,7 @@ workbook:
   (taxable values & net tax revenue, builder lot inventory and residential
   taxable value, residential market value, senior and subordinate debt service,
   and sources & uses).
-* `ut_pid_model_memo.html` — the reimbursement memo, populated from the model:
+* `… - Memo.html` — the reimbursement memo, populated from the model:
   the absorption table, the Utah assumption bullets (levy cap, the 45%
   residential exemption on homes and builder inventory, the annual roll, the
   30 November / 1 March calendar), the bond program, and a Uses of Funds table
@@ -277,11 +289,11 @@ fails the suite.
 2. **The refunding only pays because it issues its own subordinate lien.**
    Senior refunding par plus the released reserve and surplus on hand does *not*
    cover defeasing both liens and the transaction costs — on its own the senior
-   refunding returns roughly **−$915,000**. Utah's fixed levy caps leave far less
+   refunding returns roughly **−$313,000**. Utah's fixed levy caps leave far less
    refunding headroom than Colorado's 50-plus mills. What turns it positive is
-   the refunding subordinate lien ($1,997,000, sized against the residual surplus
+   the refunding subordinate lien ($2,091,000, sized against the residual surplus
    the defeased new-money sub gives back), which lifts new money to
-   **+$1,052,126** and total developer reimbursement to **$6,491,070**. That
+   **+$1,746,691** and total developer reimbursement to **$7,185,635**. That
    makes the refunding a subordinate-lien story, not a rate story — worth saying
    out loud before anyone reads the headline number as interest savings.
 

@@ -224,6 +224,8 @@ class ModelConfig:
 
     # ── Tax / valuation mechanics (Colorado-specific) ────────────────────────
     first_year: int = 2022              # FIRST_YEAR (first "Summary" year)
+    projection_years: int = 40          # PROJECTION_YEARS — horizon from delivery
+                                        # (development, AV, revenue, summary tabs)
     inflation_start_year: int = 2025    # INFLATION_START_YEAR (home-price inflation
                                         # begins this year; flat before, never deflated)
     inflation_rate: float = 0.03        # INFLATION_RATE (home price appreciation)
@@ -234,6 +236,22 @@ class ModelConfig:
     reassess_comm_rate: float = 0.02     # REASSESS_COMM_RATE
     # "Annual" (Utah, § 59-2-303.1) or "Biennial" (the Colorado cadence).
     reassess_frequency: str = "Annual"   # REASSESS_FREQUENCY
+
+    # ── Series C cash-flow bonds ─────────────────────────────────────────────
+    # Colorado sizes an optional third lien against a SEPARATE assessment that
+    # reassesses the created taxable value at its own rate.  Carried here inert:
+    # the Utah authority for a second assessment on the same property has not
+    # been worked through, so the toggle is off and the rows are kept off the
+    # Inputs template rather than offered untested.
+    series_c_reassess_rate: float = 0.06  # SERIES_C_REASSESS_RATE
+    size_series_c: str = "No"                      # SIZE_SERIES_C — Yes/No toggle
+    series_c_interest_rate: float = 0.08           # SERIES_C_INTEREST_RATE (accreting)
+    dsc_series_c: float = 1.0                      # DSC_SERIES_C — coverage
+    series_c_final_mat_yrs: int = 40               # SERIES_C_FINAL_MAT_YRS (from delivery)
+    # Developer cash contribution — a source in the first-financing Sources &
+    # Uses, applied to a chosen series (Senior / Subordinate / Proportional).
+    developer_contribution: float = 0.0            # DEVELOPER_CONTRIBUTION ($)
+    developer_contribution_series: str = "Proportional"  # DEVELOPER_CONTRIBUTION_SERIES
 
     # Primary residential exemption: taxable value is 55% of fair market value
     # (Utah Const. art. XIII, § 3; § 59-2-103).
@@ -547,6 +565,18 @@ class ModelConfig:
         """Senior final maturity year = first-interest year + the maturity term
         (matches the surplus-fund release date)."""
         return self.delivery.year + 1 + self.final_mat_yrs
+
+    @property
+    def sub_final_year(self) -> int:
+        """Subordinate lien final maturity year (FINAL_MAT_SUB_YRS from the inputs);
+        defaults to the same 30-year term as the senior lien."""
+        return self.delivery.year + 1 + self.final_mat_sub_yrs
+
+    @property
+    def series_c_final_year(self) -> int:
+        """Series C final maturity year (from delivery); same 12/15 payment dates
+        as the subordinate lien."""
+        return self.delivery.year + self.series_c_final_mat_yrs
 
     @property
     def delivery_refunding(self) -> date:

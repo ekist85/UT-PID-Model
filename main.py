@@ -134,21 +134,55 @@ def run_model(export: bool = True, output_dir: str | None = None,
               f"min {cov['coverage'].min():.2f}x, max {cov['coverage'].max():.2f}x, "
               f"once stabilized ~{cov['coverage'].iloc[-1]:.2f}x")
 
-    # ── 4. Subordinate par — dynamically sized from residual surplus ───────
-    first_final = senior.final_year
-    _surplus_first = SurplusFund(cfg, sm).build(senior, None, cfg.first_collection_year, first_final)
+    # ── 4. Senior surplus fund + subordinate + Series C cash-flow liens ────
+    first_final = senior.final_year          # senior maturity / surplus-fund release
+    sub_final = cfg.sub_final_year           # subordinate maturity (FINAL_MAT_SUB_YRS)
+    # The surplus fund must span whichever lien runs longer.
+    surplus = SurplusFund(cfg, sm).build(
+        senior, None, cfg.first_collection_year, max(first_final, sub_final))
+    _surplus_first = surplus
     if cfg.sub_par is None:
         sub_par = SubordinateLien(cfg, sm).size_par(
-            senior, cfg.first_collection_year, first_final, surplus_fund=_surplus_first)
+            senior, cfg.first_collection_year, sub_final, surplus_fund=surplus)
     else:
         sub_par = cfg.sub_par
-    print(f"    Subordinate par (sized to residual surplus): ${sub_par:,.0f}")
+    sub = SubordinateLien(cfg, sm).size(
+        sub_par, senior, cfg.first_collection_year, sub_final, surplus_fund=surplus)
+    print(f"\n[4] Senior surplus fund target: ${surplus.target:,.0f} "
+          f"(excess flows to sub lien once full)")
+    print(f"    Subordinate cash-flow note: par ${sub.par_amount:,.0f}  "
+          f"({sub.coverage:.2f}x coverage, {sub.rate:.0%} accreting)  |  "
+          f"fully repaid: {sub.fully_repaid}")
 
-    # ── 5. Sources & Uses + Reimbursement (first financing) ────────────────
-    su = first_financing_sources_uses(cfg, senior, sub_par=sub_par)
+    # Series C cash-flow bonds — sized against a separate biennially-reassessed AV.
+    series_c = None
+    series_c_par = 0.0
+    if cfg.size_series_c == "Yes":
+        from ut_pid_model import size_series_c as _size_series_c
+        series_c = _size_series_c(cfg, sm, dev, senior, sub,
+                                  cfg.first_collection_year, first_final)
+        series_c_par = series_c.par_amount
+        print(f"    Series C cash-flow bonds (separate assessment @ "
+              f"{cfg.series_c_reassess_rate:.0%} reassessment): "
+              f"par ${series_c.par_amount:,.0f} "
+              f"({series_c.coverage:.2f}x, {series_c.rate:.0%} accreting)  |  "
+              f"fully repaid: {series_c.fully_repaid}")
+
+    # ── 5. Developer contribution + Sources & Uses (first financing) ───────
+    from ut_pid_model.sources_uses import allocate_contribution
+    contribution = allocate_contribution(
+        cfg.developer_contribution, cfg.developer_contribution_series,
+        senior.par_amount, sub_par, series_c_par)
+    if series_c is not None:
+        series_c.contribution = contribution["series_c"]
+    su = first_financing_sources_uses(
+        cfg, senior, sub_par, series_c_par=series_c_par, contribution=contribution)
     print(f"\n[5] First-financing Sources & Uses (balanced={su.balanced}):")
     for k, v in su.uses.items():
         print(f"      {k:<28} ${v:>13,.0f}")
+    if cfg.developer_contribution:
+        print(f"      (developer contribution ${cfg.developer_contribution:,.0f} "
+              f"→ {cfg.developer_contribution_series})")
     print(f"    >>> Developer reimbursement: ${su.reimbursement:,.0f}")
 
     # ── 6. Refunding — refinance the senior new-money bonds ─────────────────
@@ -164,7 +198,7 @@ def run_model(export: bool = True, output_dir: str | None = None,
             surplus_on_hand = cfg.refunding_surplus_on_hand
         if cfg.refunding_sub_escrow is None:
             sub_first = SubordinateLien(cfg, sm).size(
-                sub_par, senior, cfg.first_collection_year, first_final, surplus_fund=_surplus_first)
+                sub_par, senior, cfg.first_collection_year, sub_final, surplus_fund=_surplus_first)
             srow = {r["year"]: r for r in sub_first.rows}.get(ref_year)
             sub_escrow = round(((srow["principal_balance"] + srow["accrued_balance"])
                                 if srow else 0.0) / 1) if srow else 0.0
@@ -172,22 +206,6 @@ def run_model(export: bool = True, output_dir: str | None = None,
             sub_escrow = cfg.refunding_sub_escrow
         refunding = RefundingAnalysis(cfg, sm).run(
             senior, surplus_on_hand=surplus_on_hand, sub_escrow=sub_escrow)
-
-    # ── 7. Senior surplus fund + subordinate cash-flow lien ────────────────
-    # The subordinate lien is the first-financing instrument (sized against this
-    # same surplus); the refunding separately escrows it (section 6).
-    surplus = _surplus_first
-    sub = SubordinateLien(cfg, sm).size(
-        sub_par, senior, cfg.first_collection_year, first_final, surplus_fund=surplus)
-    print(f"\n[6] Senior surplus fund target: ${surplus.target:,.0f} "
-          f"(excess flows to sub lien once full)")
-    print(f"\n[7] Subordinate cash-flow note: par ${sub.par_amount:,.0f}  "
-          f"({sub.coverage:.2f}x coverage, {sub.rate:.0%} accreting)")
-    print(f"    Total debt service ${sub.total_payments:,.0f} "
-          f"(interest ${sub.total_interest_paid:,.0f} + "
-          f"principal ${sub.total_principal_paid:,.0f})")
-    print(f"    Fully repaid: {sub.fully_repaid}  |  "
-          f"ending accrued interest ${sub.ending_accrued_interest:,.0f}")
 
     if refunding is not None:
         print(f"\n[8] REFUNDING — refinance senior new-money bonds:")
@@ -215,19 +233,25 @@ def run_model(export: bool = True, output_dir: str | None = None,
     # output workbook, forecast exhibits, and the reimbursement memo.
     if export:
         os.makedirs(output_dir, exist_ok=True)
+        # Deliverable file names follow the title order: today's date, Reimbursement
+        # Analysis, district, # lots, Tierra Financial Advisors (+ a per-file tag).
+        from ut_pid_model import deliverable_basename
+        base = deliverable_basename(cfg, lots=(dev.total_lots if dev is not None else None))
         xlsx = build_excel_report(
             cfg, sm, senior, su, refunding, sub, surplus, dev=dev,
-            output_path=f"{output_dir}/ut_pid_model_output.xlsx",
+            series_c=series_c, contribution=contribution,
+            output_path=f"{output_dir}/{base}.xlsx",
         )
         # Forecast exhibits — base case + development stress scenarios (80%/45%).
         scenarios = build_scenarios(cfg, dev, stress_pace_factors=(0.80, 0.45),
                                     sub_par=sub_par)
         forecast_xlsx = build_forecast_report(
-            scenarios, output_path=f"{output_dir}/ut_pid_forecast_exhibits.xlsx")
+            scenarios, output_path=f"{output_dir}/{base} - Forecast Exhibits.xlsx")
         # Tierra-style reimbursement memo (HTML), populated from the model.
         memo_html = build_memo_html(
             cfg, sm, senior, su, sub, refunding, dev=dev,
-            output_path=f"{output_dir}/ut_pid_model_memo.html",
+            series_c=series_c, contribution=contribution,
+            output_path=f"{output_dir}/{base} - Memo.html",
             developer=cfg.developer or "[Developer / Master Developer]")
         print(f"\n[9] Output written to '{output_dir}/':")
         print(f"    Model output:      {xlsx}")

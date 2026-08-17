@@ -35,6 +35,7 @@ code("""import pandas as pd
 from ut_pid_model import (
     ModelConfig, DeveloperProjections, SummaryModel, SeniorLienSizer,
     SubordinateLien, RefundingAnalysis, first_financing_sources_uses,
+    allocate_contribution, size_series_c,
     schedule_dataframe, build_excel_report,
 )
 pd.options.display.float_format = lambda x: f"{x:,.0f}" """)
@@ -237,17 +238,42 @@ is sized dynamically** to the largest amount the residual surplus repays, and
 the DSRF, sub par, and refunding amounts are all derived from the district's
 taxable value and revenue (nothing hardcoded).""")
 code("""from ut_pid_model import SurplusFund
-surplus = SurplusFund(cfg, sm).build(senior, None, cfg.first_collection_year, senior.final_year)
+# Senior maturity releases the surplus fund; the sub runs to its own maturity
+# (FINAL_MAT_SUB_YRS). The surplus fund spans whichever lien is longer.
+sub_final = cfg.sub_final_year
+surplus = SurplusFund(cfg, sm).build(senior, None, cfg.first_collection_year,
+                                     max(senior.final_year, sub_final))
 sub_par = (cfg.sub_par if cfg.sub_par is not None
            else SubordinateLien(cfg, sm).size_par(
-               senior, cfg.first_collection_year, senior.final_year, surplus_fund=surplus))
+               senior, cfg.first_collection_year, sub_final, surplus_fund=surplus))
+sub = SubordinateLien(cfg, sm).size(sub_par, senior, cfg.first_collection_year,
+                                    sub_final, surplus_fund=surplus)
 print(f"Surplus-fund target: ${surplus.target:,.0f}")
 print(f"Subordinate par (sized to residual surplus): ${sub_par:,.0f}")
 
-su = first_financing_sources_uses(cfg, senior, sub_par=sub_par)
+# Series C cash-flow bonds — sized against a separate biennially-reassessed AV.
+series_c, series_c_par = None, 0.0
+if cfg.size_series_c == "Yes":
+    series_c = size_series_c(cfg, sm, dev, senior, sub,
+                             cfg.first_collection_year, senior.final_year)
+    series_c_par = series_c.par_amount
+    print(f"Series C par (separate {cfg.series_c_reassess_rate:.0%}-reassessed "
+          f"assessment): ${series_c_par:,.0f}   fully repaid: {series_c.fully_repaid}")
+
+# Developer contribution — a source applied to the chosen series (or spread).
+contribution = allocate_contribution(cfg.developer_contribution,
+                                      cfg.developer_contribution_series,
+                                      senior.par_amount, sub_par, series_c_par)
+if series_c is not None:
+    series_c.contribution = contribution["series_c"]
+
+su = first_financing_sources_uses(cfg, senior, sub_par, series_c_par=series_c_par,
+                                  contribution=contribution)
 print("\\nUSES OF FUNDS")
 for k, v in su.uses.items():
     print(f"  {k:<28} ${v:>13,.0f}")
+if cfg.developer_contribution:
+    print(f"  (developer contribution ${cfg.developer_contribution:,.0f} -> {cfg.developer_contribution_series})")
 print(f"\\nTotal sources ${su.total_sources:,.0f}  ==  Total uses ${su.total_uses:,.0f}  (balanced={su.balanced})")
 print(f">>> Developer reimbursement: ${su.reimbursement:,.0f}")""")
 
@@ -255,10 +281,10 @@ md("""## 6. Subordinate cash-flow lien
 
 The subordinate lien is a **cash-flow bond**: coverage factor (`DSC_SUB`),
 interest at the sub rate that **compounds while unpaid**, repaid only from
-residual surplus after the senior lien once the reserve target is satisfied.""")
-code("""sub = SubordinateLien(cfg, sm).size(sub_par, senior, cfg.first_collection_year,
-                                    senior.final_year, surplus_fund=surplus)
-print(f"Subordinate par: ${sub.par_amount:,.0f}   coverage: {sub.coverage:.2f}x   "
+residual surplus after the senior lien once the reserve target is satisfied.
+When `SIZE_SERIES_C` is on, a third-tier **Series C** cash-flow bond is sized the
+same way against a separate, more-aggressively-reassessed assessment.""")
+code("""print(f"Subordinate par: ${sub.par_amount:,.0f}   coverage: {sub.coverage:.2f}x   "
       f"rate: {sub.rate:.0%} (accreting)")
 print(f"Total debt service: ${sub.total_payments:,.0f}  "
       f"(interest ${sub.total_interest_paid:,.0f} + principal ${sub.total_principal_paid:,.0f})")
@@ -303,14 +329,20 @@ print(f"First-financing reimbursement:  ${su.reimbursement:,.0f}")
 print(f"Refunding 'new money':          ${refunding.new_money_reimbursement:,.0f}")
 print(f"TOTAL developer reimbursement:  ${total:,.0f}")
 
+# Deliverable file names follow the title order: date, Reimbursement Analysis,
+# district, # lots, Tierra Financial Advisors (+ a per-file tag).
+from ut_pid_model import deliverable_basename
+_base = deliverable_basename(cfg, lots=dev.total_lots)
 path = build_excel_report(cfg, sm, senior, su, refunding, sub, surplus, dev=dev,
-                          output_path=os.path.join(OUTPUT_DIR, "ut_pid_model_output.xlsx"))
+                          series_c=series_c, contribution=contribution,
+                          output_path=os.path.join(OUTPUT_DIR, f"{_base}.xlsx"))
 print(f"\\nExcel report written to: {path}")
 
 # Tierra-style reimbursement memo (HTML), populated from the model.
 from ut_pid_model import build_memo_html
 memo_path = build_memo_html(cfg, sm, senior, su, sub, refunding, dev=dev,
-                            output_path=os.path.join(OUTPUT_DIR, "ut_pid_model_memo.html"),
+                            series_c=series_c, contribution=contribution,
+                            output_path=os.path.join(OUTPUT_DIR, f"{_base} - Memo.html"),
                             developer=cfg.developer or "[Developer / Master Developer]")
 print(f"Reimbursement memo written to: {memo_path}")""")
 
@@ -338,7 +370,7 @@ for s in scenarios:
     print(f"Exhibit {s.exhibit} ({s.pace_factor:>4.0%} pace): build-out {max(closed)}, "
           f"min construction-era coverage {min(covs):.2f}x")
 
-fpath = build_forecast_report(scenarios, output_path=os.path.join(OUTPUT_DIR, "ut_pid_forecast_exhibits.xlsx"))
+fpath = build_forecast_report(scenarios, output_path=os.path.join(OUTPUT_DIR, f"{_base} - Forecast Exhibits.xlsx"))
 print(f"\\nForecast exhibits written to: {fpath}")
 import openpyxl
 print("Sheets:", openpyxl.load_workbook(fpath).sheetnames)""")

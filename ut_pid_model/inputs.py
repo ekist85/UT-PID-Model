@@ -93,11 +93,14 @@ _SPECS: list[tuple] = [
     ("Stress Testing", "Home Sales Pace (% of forecast)", "ABSORPTION_PACE_FACTOR", "absorption_pace_factor", "pct", "100% = base; 50% halves the monthly pace"),
 
     ("Tax & Valuation", "First Year (Summary)", "FIRST_YEAR", "first_year", "int", ""),
+    ("Tax & Valuation", "Projection Horizon (years from delivery)", "PROJECTION_YEARS", "projection_years", "int", "development, AV, revenue & summary tabs run this many years"),
     ("Tax & Valuation", "Inflation Start Year", "INFLATION_START_YEAR", "inflation_start_year", "int", "home-price inflation begins this year; flat (not deflated) before"),
     ("Tax & Valuation", "Inflation Rate (home prices)", "INFLATION_RATE", "inflation_rate", "pct", ""),
     ("Tax & Valuation", "Inflation Rate (commercial sales)", "INFLATION_RATE_COMM_SALES", "inflation_rate_comm_sales", "pct", ""),
     ("Tax & Valuation", "Reassessment - Residential", "REASSESS_RATE", "reassess_rate", "pct", "applied annually in Utah"),
     ("Tax & Valuation", "Reassessment - Commercial", "REASSESS_COMM_RATE", "reassess_comm_rate", "pct", ""),
+    ("Developer Contribution", "Developer Contribution ($)", "DEVELOPER_CONTRIBUTION", "developer_contribution", "float", "cash contributed by the developer (a source of funds)"),
+    ("Developer Contribution", "Applied To (Senior / Subordinate / Proportional)", "DEVELOPER_CONTRIBUTION_SERIES", "developer_contribution_series", "str", "which series the contribution funds; Proportional spreads it by par"),
     ("Tax & Valuation", "Primary Residential Taxable Ratio", "RESID_TAXABLE_RATIO", "resid_taxable_ratio", "pct", "55% — the 45% exemption, § 59-2-103"),
     ("Tax & Valuation", "Prior Residential Taxable Ratio", "RESID_TAXABLE_RATIO_PRIOR", "resid_taxable_ratio_prior", "pct", "ratio before the current exemption"),
     ("Tax & Valuation", "Mill Levy Tax Collection %", "TAX_COLLECT_MILL_PRC", "tax_collect_mill_prc", "pct", ""),
@@ -282,8 +285,14 @@ def write_inputs_workbook(
     # bool flags (attached to each value cell as it is written below).
     dv_yesno = DataValidation(type="list", formula1='"Yes,No"', allow_blank=True)
     dv_tf = DataValidation(type="list", formula1='"TRUE,FALSE"', allow_blank=True)
+    # Dropdown for the developer-contribution "Applied To" series — restricts input
+    # to the four valid choices so the user cannot mistype.
+    dv_series = DataValidation(
+        type="list", formula1='"Senior,Subordinate,Proportional"',
+        allow_blank=True)
     ws.add_data_validation(dv_yesno)
     ws.add_data_validation(dv_tf)
+    ws.add_data_validation(dv_series)
 
     r = 5
     last_section = None
@@ -317,6 +326,8 @@ def write_inputs_workbook(
             vc.number_format = fmt
         if kind == "yesno":
             (dv_tf if is_bool_flag else dv_yesno).add(vc)
+        if attr == "developer_contribution_series":
+            dv_series.add(vc)
         rc = ws.cell(row=r, column=4, value=rng); rc.font = _NOTE; rc.border = _BORDER; rc.alignment = _L
         nc = ws.cell(row=r, column=5, value=note); nc.font = _NOTE; nc.border = _BORDER; nc.alignment = _L
         r += 1

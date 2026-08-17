@@ -83,6 +83,7 @@ def _md(d):
 
 
 def build_memo_html(cfg, sm, senior, su, sub=None, refunding=None, dev=None,
+                    series_c=None, contribution=None,
                     output_path: str = "output/ut_pid_model_memo.html",
                     developer: str = "[Developer / Master Developer]") -> str:
     """Render the reimbursement memo HTML from the model objects and write it.
@@ -228,8 +229,9 @@ def build_memo_html(cfg, sm, senior, su, sub=None, refunding=None, dev=None,
     # ── Bond program / reimbursement table ─────────────────────────────────
     sr_par = senior.par_amount
     sub_par = sub.par_amount if sub is not None else 0.0
+    series_c_par = series_c.par_amount if series_c is not None else 0.0
     first_reimb = su.reimbursement
-    first_par = sr_par + sub_par
+    first_par = sr_par + sub_par + series_c_par
     cum = first_reimb
     rows = [
         (f"<tr><td class='l'>Senior New-Money Bonds, Series {cfg.delivery.year}A</td>"
@@ -241,6 +243,16 @@ def build_memo_html(cfg, sm, senior, su, sub=None, refunding=None, dev=None,
             f"<tr><td class='l'>Subordinate Lien Cash-Flow Note</td>"
             f"<td class='c'>{_md(cfg.delivery)}</td><td>{_money(sub_par)}</td>"
             f"<td class='c'>{sub.rate:.2%}</td><td>&mdash;</td><td>&mdash;</td></tr>")
+    if series_c is not None and series_c_par > 0:
+        rows.append(
+            f"<tr><td class='l'>Series C Cash-Flow Bonds</td>"
+            f"<td class='c'>{_md(cfg.delivery)}</td><td>{_money(series_c_par)}</td>"
+            f"<td class='c'>{series_c.rate:.2%}</td><td>&mdash;</td><td>&mdash;</td></tr>")
+    if contribution and sum(contribution.values()) > 0:
+        rows.append(
+            f"<tr><td class='l'>Developer Contribution</td>"
+            f"<td class='c'>{_md(cfg.delivery)}</td><td>{_money(sum(contribution.values()))}</td>"
+            f"<td class='c'>&mdash;</td><td>&mdash;</td><td>&mdash;</td></tr>")
     rows.append(
         f"<tr class='sub'><td class='l'>First Financing &mdash; Net Reimbursement</td>"
         f"<td class='c'></td><td>{_money(first_par)}</td><td class='c'></td>"
@@ -274,58 +286,70 @@ def build_memo_html(cfg, sm, senior, su, sub=None, refunding=None, dev=None,
     bond_rows = "".join(rows)
 
     # ── Sources & Uses (first financing) ──────────────────────────────────
-    # Uses of Funds split per series (senior new-money vs. subordinate cash-flow
-    # note), mirroring the "Sources & Uses" tab so the reimbursement split is
-    # visible — same derivation as the workbook.
+    # Uses of Funds split per series (senior / subordinate / Series C), mirroring
+    # the "Sources & Uses" tab — reimbursement per column already includes the
+    # developer contribution applied to that series.
     yr = cfg.delivery.year
+    dc = contribution or {"senior": 0.0, "subordinate": 0.0, "series_c": 0.0}
     has_sub = sub is not None and sub_par > 0
+    has_c = series_c is not None and series_c_par > 0
     _capi = sum(p.capitalized_interest for p in senior.schedule)
     _dsrf = senior.dsrf_deposit
     _prem_sr = senior.total_premium
     _uwd_sr = cfg.uwd_senior * sr_par
     _uwd_sb = cfg.uwd_sub * sub_par
+    _uwd_sc = cfg.uwd_sub * series_c_par
     _coi = cfg.coi
-    _reimb_sr = sr_par + _prem_sr - _dsrf - _capi - _uwd_sr - _coi
-    _reimb_sb = sub_par - _uwd_sb
-    # (label, senior, sub) — sub = None means "not applicable" (blank cell).
-    uses_data = [
-        ("Estimated Reimbursement Amount", _reimb_sr, _reimb_sb),
-        ("Debt Service Reserve Fund", _dsrf, 0.0),
-        ("Capitalized Interest", _capi, 0.0),
-        ("Underwriter's Discount", _uwd_sr, _uwd_sb),
-        ("Costs of Issuance", _coi, None),
+    _reimb_sr = sr_par + _prem_sr - _dsrf - _capi - _uwd_sr - _coi + dc["senior"]
+    _reimb_sb = sub_par - _uwd_sb + dc["subordinate"]
+    _reimb_sc = series_c_par - _uwd_sc + dc["series_c"]
+
+    keys = ["sr"] + (["sb"] if has_sub else []) + (["sc"] if has_c else [])
+    hdrs = {"sr": f"Senior Lien Bonds<br>Series {yr}A",
+            "sb": f"Subordinate Lien<br>Cash-Flow Note Series {yr}B",
+            "sc": f"Series C<br>Cash-Flow Bonds Series {yr}C"}
+    # (label, {sr, sb, sc}); None = "not applicable" (blank).
+    rows_data = [
+        ("Estimated Reimbursement Amount", {"sr": _reimb_sr, "sb": _reimb_sb, "sc": _reimb_sc}),
+        ("Debt Service Reserve Fund", {"sr": _dsrf, "sb": 0.0, "sc": 0.0}),
+        ("Capitalized Interest", {"sr": _capi, "sb": 0.0, "sc": 0.0}),
+        ("Underwriter's Discount", {"sr": _uwd_sr, "sb": _uwd_sb, "sc": _uwd_sc}),
+        ("Costs of Issuance", {"sr": _coi, "sb": None, "sc": None}),
     ]
-    total_sr = _reimb_sr + _dsrf + _capi + _uwd_sr + _coi
-    total_sb = _reimb_sb + _uwd_sb
-    total_uses = total_sr + total_sb
-
-    def _row_total(sv, bv):
-        return _money((sv or 0.0) + (bv or 0.0)) if bv is not None else _money(sv)
-
-    if has_sub:
-        u_rows = "".join(
-            f"<tr><td class='l'>{lbl}</td><td>{_money(sv)}</td>"
-            f"<td>{_money(bv) if bv is not None else ''}</td>"
-            f"<td>{_row_total(sv, bv)}</td></tr>"
-            for lbl, sv, bv in uses_data)
+    col_tot = {k: 0.0 for k in keys}
+    grand = 0.0
+    body = ""
+    multi = len(keys) > 1
+    for label, vals in rows_data:
+        row_tot = sum(vals.get(k) or 0.0 for k in keys)
+        grand += row_tot
+        for k in keys:
+            col_tot[k] += vals.get(k) or 0.0
+        if multi:
+            cells = "".join(
+                f"<td>{_money(vals.get(k)) if vals.get(k) is not None else ''}</td>" for k in keys)
+            body += f"<tr><td class='l'>{label}</td>{cells}<td>{_money(row_tot)}</td></tr>"
+        else:
+            body += f"<tr><td class='l'>{label}</td><td>{_money(row_tot)}</td></tr>"
+    total_uses = grand
+    if multi:
+        header_cells = "".join(f"<th>{hdrs[k]}</th>" for k in keys)
+        tot_cells = "".join(f"<td>{_money(col_tot[k])}</td>" for k in keys)
+        width = 3.3 + 1.05 * len(keys)
         uses_table = (
-            '<table class="data" style="width:5.4in">\n'
-            '  <tr><th style="text-align:left">Uses of Funds — First Financing</th>'
-            f'<th>Senior Lien Bonds<br>Series {yr}A</th>'
-            f'<th>Subordinate Lien<br>Cash-Flow Note Series {yr}B</th><th>Total</th></tr>\n'
-            f'  {u_rows}\n'
-            f'  <tr class="total"><td class="l">Total Uses</td><td>{_money(total_sr)}</td>'
-            f'<td>{_money(total_sb)}</td><td>{_money(total_uses)}</td></tr>\n'
+            f'<table class="data" style="width:{width:.1f}in">\n'
+            f'  <tr><th style="text-align:left">Uses of Funds — First Financing</th>'
+            f'{header_cells}<th>Total</th></tr>\n'
+            f'  {body}\n'
+            f'  <tr class="total"><td class="l">Total Uses</td>{tot_cells}'
+            f'<td>{_money(grand)}</td></tr>\n'
             '</table>')
     else:
-        u_rows = "".join(
-            f"<tr><td class='l'>{lbl}</td><td>{_row_total(sv, bv)}</td></tr>"
-            for lbl, sv, bv in uses_data)
         uses_table = (
             '<table class="data" style="width:3.3in">\n'
             '  <tr><th style="text-align:left">Uses of Funds — First Financing</th>'
             '<th>Amount</th></tr>\n'
-            f'  {u_rows}\n'
+            f'  {body}\n'
             f'  <tr class="total"><td class="l">Total Uses</td><td>{_money(total_uses)}</td></tr>\n'
             '</table>')
 

@@ -141,11 +141,13 @@ def build_residential_sheet(ws, cfg, dev, sm):
 
     deliv = [p.lot_deliveries for p in prods]
     close = [p.home_closings for p in prods]
-    years = sorted(set().union(*([set(d) for d in deliv] + [set(c) for c in close])))
-    years = [y for y in years
-             if any(deliv[i].get(y, 0) or close[i].get(y, 0) for i in range(ncol))]
-    if not years:
-        years = [cfg.first_year]
+    # Run every section from the first development year through the full projection
+    # horizon (40 years from delivery) — deliveries/closings are zero after build-out,
+    # but pricing and taxable value continue, so the tab spans the whole horizon.
+    _active = [y for y in sorted(set().union(*([set(d) for d in deliv] + [set(c) for c in close])))
+               if any(deliv[i].get(y, 0) or close[i].get(y, 0) for i in range(ncol))]
+    _y0 = min(_active) if _active else cfg.first_year
+    years = list(range(_y0, getattr(dev, "last_year", _y0) + 1))
 
     # ── Column plan: Year, then Lot Deliveries (per product + Total), then
     #    Home Closings (per product + Total).  Aggregate ⇒ one column each. ────
@@ -285,13 +287,11 @@ def build_residential_sheet(ws, cfg, dev, sm):
         c += len(subs)
     r = sh + 1
 
+    # Reconcile from the first development year through the full projection horizon
+    # (taxable value continues — with reassessment — long after build-out).
     yrs2 = sorted(set(dev.lot_deliveries) | set(dev.home_closings))
     if yrs2:
-        y0, y1 = min(yrs2), max(yrs2)
-        yend = y1
-        while dev.vacant_lot_units(yend) > 0.5 and yend < y1 + 8:
-            yend += 1
-        recon_years = list(range(y0, yend + 1))
+        recon_years = list(range(min(yrs2), getattr(dev, "last_year", max(yrs2)) + 1))
     else:
         recon_years = []
 

@@ -217,7 +217,7 @@ class DeveloperProjections:
         year, then amortized), Cumulative Finished / 100% Lot Value, Assessment
         Ratio, Taxable Value (= 100% lot value × ratio).
         """
-        first, horizon_end = cfg.first_year, cfg.senior_final_year
+        first, horizon_end = cfg.first_year, self.last_year
 
         def l2h(y):
             return (self.vacant_lot_market_value(y - 1) + self.lot_market_value.get(y, 0.0)
@@ -293,7 +293,7 @@ class DeveloperProjections:
         gross in the certification year — existing residential ÷ historical rate — then
         amortizes).  Taxable Value = Gross × residential taxable ratio.
         """
-        first, horizon_end = cfg.first_year, cfg.senior_final_year
+        first, horizon_end = cfg.first_year, self.last_year
         hist = getattr(cfg, "historical_av", None) or {}
 
         # Seed year (earliest historical residential → trued-up existing homes) and
@@ -393,14 +393,29 @@ class DeveloperProjections:
         return bool(self.products)
 
     # ── Build ───────────────────────────────────────────────────────────────
-    def build(self, cfg, last_year: int = 2067) -> "DeveloperProjections":
+    def build(self, cfg, last_year: int | None = None) -> "DeveloperProjections":
         """
         Roll up per-product detail (if any) into the aggregate drivers, then
         compute the cumulative home market value series (Summary column M) with
         reassessment.
+
+        The projection horizon runs ``cfg.projection_years`` (default 40) years
+        from the delivery date unless an explicit ``last_year`` is given.
         """
         self._infl = cfg.inflation_rate
         self._inflation_start_year = cfg.inflation_start_year
+        # The projection horizon is PROJECTION_YEARS (default 40) from delivery.
+        # It NEVER falls below the longest bond maturity, so bond sizing depends
+        # only on the final-maturity inputs — not on the display horizon.
+        if last_year is None:
+            horizon = cfg.delivery.year + cfg.projection_years
+            bond_end = cfg.senior_final_year
+            if getattr(cfg, "refund_financing", "No") == "Yes":
+                bond_end = max(bond_end,
+                               cfg.delivery_refunding.year + cfg.final_mat_yrs_refunding)
+            if getattr(cfg, "size_series_c", "No") == "Yes":
+                bond_end = max(bond_end, cfg.series_c_final_year)
+            last_year = max(horizon, bond_end)
         self.last_year = last_year
 
         # Derive aggregate drivers from products when in per-product mode.

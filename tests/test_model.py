@@ -24,6 +24,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ut_pid_model import (CallProvisions, DeveloperProjections, ModelConfig,
+                          allocate_contribution,
                           PID_STATUTORY_LEVY_CAP, RESIDENTIAL_EXEMPTION,
                           RefundingAnalysis, SeniorLienSizer, SubordinateLien,
                           SummaryModel, SurplusFund, build_scenarios,
@@ -295,6 +296,34 @@ def test_refunding_new_money_depends_on_the_refunding_sub(built, senior):
     assert res.new_money_reimbursement > 0
 
 
+def test_series_c_is_off_and_invisible(tmp_path):
+    """Series C ports across as code but stays inert: toggle off, no Inputs rows,
+    no tab, no memo row.  Its Utah statutory basis has not been worked through."""
+    import openpyxl
+    from ut_pid_model import write_inputs_workbook
+    assert ModelConfig().size_series_c == "No"
+    path = write_inputs_workbook(output_path=str(tmp_path / "inputs.xlsx"))
+    wb = openpyxl.load_workbook(path)
+    for ws in wb.worksheets:
+        for row in ws.iter_rows():
+            for cell in row:
+                if isinstance(cell.value, str):
+                    assert "Series C" not in cell.value, f"{ws.title}!{cell.coordinate}"
+                    assert "SERIES_C" not in cell.value, f"{ws.title}!{cell.coordinate}"
+
+
+def test_developer_contribution_is_a_source_and_defaults_to_zero():
+    from ut_pid_model import allocate_contribution
+    cfg = ModelConfig()
+    assert cfg.developer_contribution == 0.0
+    split = allocate_contribution(0.0, cfg.developer_contribution_series,
+                                  5_665_000, 1_730_000, 0.0)
+    assert sum(split.values()) == 0.0
+    split = allocate_contribution(100_000, "Proportional", 5_665_000, 1_730_000, 0.0)
+    assert sum(split.values()) == pytest.approx(100_000)
+    assert split["series_c"] == 0.0
+
+
 # ── Utah vs Colorado behaviour ────────────────────────────────────────────────
 
 def test_utah_base_dwarfs_the_colorado_base_for_the_same_homes(built):
@@ -318,13 +347,33 @@ def test_three_mills_in_utah_beats_sixty_in_colorado_on_capacity(built):
     assert sm.row(2032).mill_revenue > colorado.row(2032).mill_revenue
 
 
-def test_summary_stops_at_the_value_build_horizon(built):
-    """No tail of zero taxable value past the senior final maturity."""
-    cfg, _dev, sm = built
-    # The builds are keyed by roll year and collected the next, so the last row
-    # is the collection of the final-maturity roll.
-    assert sm.rows[-1].collection_year <= cfg.senior_final_year + 1
+def test_summary_runs_the_projection_horizon_with_no_zero_tail(built):
+    """The projection runs PROJECTION_YEARS from delivery — never past the value
+    builds into a tail of zero taxable value and fee-only negative revenue."""
+    cfg, dev, sm = built
+    horizon = max(cfg.delivery.year + cfg.projection_years, cfg.senior_final_year)
+    assert dev.last_year == horizon
+    assert sm.rows[-1].collection_year == horizon
     assert all(r.total_av > 0 for r in sm.rows if r.collection_year >= 2026)
+    assert sm.rows[-1].net_senior_revenue > 0
+
+
+def test_projection_horizon_never_truncates_bond_sizing(senior):
+    """A short display horizon must not shorten the revenue a bond sizes
+    against — the horizon floors at the longest bond maturity."""
+    cfg = ModelConfig(projection_years=5)
+    dev = viridian_farm_projections().build(cfg)
+    assert dev.last_year >= cfg.senior_final_year
+    sm = SummaryModel(cfg, dev).build()
+    calls = CallProvisions(cfg.premium_call_date, cfg.par_call_date,
+                           cfg.premium_call_price)
+    short = size_senior_with_dynamic_dsrf(
+        SeniorLienSizer(cfg, sm),
+        name="Senior", rate=cfg.senior_interest_rate, coverage=cfg.dsc_senior,
+        delivery=cfg.delivery, first_principal_year=cfg.senior_first_principal_year,
+        final_year=cfg.senior_final_year, capi_end_year=cfg.capi_end_date.year,
+        call_provisions=calls)
+    assert short.par_amount == pytest.approx(senior.par_amount)
 
 
 def test_biennial_reassessment_lands_below_annual(built):
@@ -424,25 +473,39 @@ def deliverables(tmp_path_factory):
     return out, result
 
 
+def _deliverable(out, result, suffix=""):
+    """Deliverables are named '<date> - Reimbursement Analysis - <district> -
+    <N> Lots - Tierra Financial Advisors[ - <tag>].<ext>'."""
+    from ut_pid_model import deliverable_basename
+    cfg = result["cfg"]
+    base = deliverable_basename(cfg, lots=result["dev"].total_lots)
+    return out / f"{base}{suffix}"
+
+
+WORKBOOK = ".xlsx"
+FORECAST = " - Forecast Exhibits.xlsx"
+MEMO = " - Memo.html"
+
+
 def test_workbook_has_the_colorado_model_tab_set(deliverables):
     import openpyxl
-    out, _ = deliverables
-    wb = openpyxl.load_workbook(out / "ut_pid_model_output.xlsx")
+    out, _r = deliverables
+    wb = openpyxl.load_workbook(_deliverable(out, _r, WORKBOOK))
     assert wb.sheetnames == EXPECTED_TABS
 
 
 def test_forecast_exhibits_cover_three_scenarios(deliverables):
     import openpyxl
-    out, _ = deliverables
-    wb = openpyxl.load_workbook(out / "ut_pid_forecast_exhibits.xlsx")
+    out, _r = deliverables
+    wb = openpyxl.load_workbook(_deliverable(out, _r, FORECAST))
     names = " ".join(wb.sheetnames)
     for prefix in ("A", "B", "C"):
         assert f"Exhibit {prefix}-1" in names or f"{prefix}-1" in names
 
 
 def test_memo_states_the_utah_framework(deliverables):
-    out, _ = deliverables
-    html = (out / "ut_pid_model_memo.html").read_text()
+    out, _r = deliverables
+    html = _deliverable(out, _r, MEMO).read_text()
     for phrase in ("17D-4", "59-2-103", "45% exemption", "30&nbsp;November",
                    "R884-24P-52", "59-2-405", "59-2-1602"):
         assert phrase in html, phrase
@@ -455,8 +518,9 @@ def test_memo_states_the_utah_framework(deliverables):
 def test_memo_uses_of_funds_splits_by_series(deliverables):
     """The per-series Uses table must foot to each series' par, and to the total."""
     import re
-    out, result = deliverables
-    html = (out / "ut_pid_model_memo.html").read_text()
+    out, _r = deliverables
+    result = _r
+    html = _deliverable(out, _r, MEMO).read_text()
     block = re.search(r"Uses of Funds.*?</table>", html, re.S)
     assert block, "memo has no Uses of Funds table"
     body = block.group(0)
@@ -588,8 +652,8 @@ def test_inputs_workbook_carries_the_om_expense_rows(tmp_path):
 
 def test_om_tab_shows_expense_against_revenue(deliverables):
     import openpyxl
-    out, _ = deliverables
-    ws = openpyxl.load_workbook(out / "ut_pid_model_output.xlsx")["O&M Revenue"]
+    out, _r = deliverables
+    ws = openpyxl.load_workbook(_deliverable(out, _r, WORKBOOK))["O&M Revenue"]
     hdrs = [ws.cell(row=5, column=c).value for c in range(1, 9)]
     assert "− O&M\nExpense" in hdrs
     assert "O&M Surplus /\n(Deficit)" in hdrs
@@ -597,16 +661,16 @@ def test_om_tab_shows_expense_against_revenue(deliverables):
 
 def test_summary_detail_shows_the_om_column(deliverables):
     import openpyxl
-    out, _ = deliverables
-    ws = openpyxl.load_workbook(out / "ut_pid_model_output.xlsx")["Summary - Detail"]
+    out, _r = deliverables
+    ws = openpyxl.load_workbook(_deliverable(out, _r, WORKBOOK))["Summary - Detail"]
     hdrs = [c.value for c in ws[5]]
     assert "− District\nO&M" in hdrs
 
 
 def test_workbook_carries_no_colorado_labels(deliverables):
     import openpyxl
-    out, _ = deliverables
-    wb = openpyxl.load_workbook(out / "ut_pid_model_output.xlsx")
+    out, _r = deliverables
+    wb = openpyxl.load_workbook(_deliverable(out, _r, WORKBOOK))
     stale = ("TABOR", "Gallagher", "Specific Ownership", "Service Plan",
              "Oil & Gas", "SB24-233", "County Treasurer", "Metro District",
              "Assessed Valuation", "Biennial reassessment",

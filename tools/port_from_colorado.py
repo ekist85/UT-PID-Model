@@ -44,7 +44,8 @@ REPO = Path(__file__).resolve().parent.parent
 #: Colorado modules that are ported wholesale.
 MODULES = [
     "__init__.py", "config.py", "development.py", "summary.py",
-    "debt_service.py", "subordinate.py", "sources_uses.py", "refunding.py",
+    "debt_service.py", "subordinate.py", "sources_uses.py", "series_c.py",
+    "refunding.py",
     "pricing.py", "inputs.py", "report.py", "residential_report.py",
     "forecast_report.py", "scenarios.py", "memo.py",
 ]
@@ -81,6 +82,8 @@ IDENTIFIER_RENAMES = [
     ("vacant_land_ratio", "lot_inventory_ratio"),
     ("developed_lot_value", "lot_inventory_taxable_ratio"),
     ("mill_levy_service_plan", "mill_levy_governing_doc"),
+    ("series_c_biennial_reassess_rate", "series_c_reassess_rate"),
+    ("SERIES_C_BIENNIAL_REASSESS_RATE", "SERIES_C_REASSESS_RATE"),
     ("biennial_reassess_comm_rate", "reassess_comm_rate"),
     ("biennial_reassess_rate", "reassess_rate"),
     ("strict_biennial_av", "hold_value_flat"),
@@ -390,13 +393,25 @@ _p("config.py", '''    dsc_senior: float = 1.25            # DSC_SENIOR_LIEN_BON
 _p("config.py", '''    interest_earn_rate: float = 0.01    # INTEREST_EARN_RATE (on DSRF / surplus)''',
    '''    interest_earn_rate: float = 0.025   # INTEREST_EARN_RATE (on DSRF / surplus)''')
 
-_p("config.py", '''    first_year: int = 2023              # FIRST_YEAR (first "Summary" year)
-    inflation_start_year: int = 2024    # INFLATION_START_YEAR (home-price inflation''',
-   '''    first_year: int = 2022              # FIRST_YEAR (first "Summary" year)
-    inflation_start_year: int = 2025    # INFLATION_START_YEAR (home-price inflation''')
+_p("config.py", '''    first_year: int = 2023              # FIRST_YEAR (first "Summary" year)''',
+   '''    first_year: int = 2022              # FIRST_YEAR (first "Summary" year)''')
+
+_p("config.py", '''    inflation_start_year: int = 2024    # INFLATION_START_YEAR (home-price inflation''',
+   '''    inflation_start_year: int = 2025    # INFLATION_START_YEAR (home-price inflation''')
 
 _p("config.py", '''    reassess_rate: float = 0.02          # REASSESS_RATE (residential)
     reassess_comm_rate: float = 0.02     # REASSESS_COMM_RATE
+    # Series C cash-flow bonds — sized against a SEPARATE assessment that biennially
+    # reassesses the created AV at this rate (used only to size the Series C bonds).
+    series_c_reassess_rate: float = 0.06  # SERIES_C_REASSESS_RATE
+    size_series_c: str = "No"                      # SIZE_SERIES_C — Yes/No toggle
+    series_c_interest_rate: float = 0.08           # SERIES_C_INTEREST_RATE (accreting)
+    dsc_series_c: float = 1.0                      # DSC_SERIES_C — coverage
+    series_c_final_mat_yrs: int = 40               # SERIES_C_FINAL_MAT_YRS (from delivery)
+    # Developer cash contribution — a source in the first-financing Sources & Uses,
+    # applied to a chosen series (Senior / Subordinate / Series C / Proportional).
+    developer_contribution: float = 0.0            # DEVELOPER_CONTRIBUTION ($)
+    developer_contribution_series: str = "Proportional"  # DEVELOPER_CONTRIBUTION_SERIES
 
     resid_taxable_ratio: float = 0.067        # RESID_TAXABLE_RATIO — residential taxable ratio
     resid_taxable_ratio_prior: float = 0.0715  # RESID_TAXABLE_RATIO_PRIOR — residential taxable ratio at time of service plan
@@ -420,6 +435,22 @@ _p("config.py", '''    reassess_rate: float = 0.02          # REASSESS_RATE (res
     reassess_comm_rate: float = 0.02     # REASSESS_COMM_RATE
     # "Annual" (Utah, § 59-2-303.1) or "Biennial" (the Colorado cadence).
     reassess_frequency: str = "Annual"   # REASSESS_FREQUENCY
+
+    # ── Series C cash-flow bonds ─────────────────────────────────────────────
+    # Colorado sizes an optional third lien against a SEPARATE assessment that
+    # reassesses the created taxable value at its own rate.  Carried here inert:
+    # the Utah authority for a second assessment on the same property has not
+    # been worked through, so the toggle is off and the rows are kept off the
+    # Inputs template rather than offered untested.
+    series_c_reassess_rate: float = 0.06  # SERIES_C_REASSESS_RATE
+    size_series_c: str = "No"                      # SIZE_SERIES_C — Yes/No toggle
+    series_c_interest_rate: float = 0.08           # SERIES_C_INTEREST_RATE (accreting)
+    dsc_series_c: float = 1.0                      # DSC_SERIES_C — coverage
+    series_c_final_mat_yrs: int = 40               # SERIES_C_FINAL_MAT_YRS (from delivery)
+    # Developer cash contribution — a source in the first-financing Sources &
+    # Uses, applied to a chosen series (Senior / Subordinate / Proportional).
+    developer_contribution: float = 0.0            # DEVELOPER_CONTRIBUTION ($)
+    developer_contribution_series: str = "Proportional"  # DEVELOPER_CONTRIBUTION_SERIES
 
     # Primary residential exemption: taxable value is 55% of fair market value
     # (Utah Const. art. XIII, § 3; § 59-2-103).
@@ -1449,6 +1480,31 @@ _p("report.py", '''    O&M revenue projection: the operations mill levy applied 
     them.  A Utah PID usually runs no operations levy, so the deficit shown here
     is what the debt-service levy is carrying.
     """''')
+
+
+
+# ── Series C is carried inert ────────────────────────────────────────────────
+# Colorado's optional third lien is sized against a SEPARATE assessment that
+# reassesses the created value at its own rate.  Whether a Utah PID can levy
+# against a second assessment on the same property is a statutory question this
+# model has not worked through, so Series C stays off (SIZE_SERIES_C = "No") and
+# its rows are kept OFF the Inputs template — an untested toggle in a
+# client-facing template is worse than no toggle.  The code ports across
+# unchanged, so turning it on is a one-line change once the authority is
+# settled.  The developer-contribution rows are generic and stay.
+_p("inputs.py", '''    ("Financing Toggles", "Size Series C Cash-Flow Bonds", "SIZE_SERIES_C", "size_series_c", "yesno", "Yes/No"),\n''', "")
+
+_p("inputs.py", '''    ("Tax & Valuation", "Reassessment - Series C", "SERIES_C_REASSESS_RATE", "series_c_reassess_rate", "pct", "separate assessment used only to size the Series C cash-flow bonds"),
+    ("Series C Bonds", "Series C Interest Rate", "SERIES_C_INTEREST_RATE", "series_c_interest_rate", "pct", "accreting cash-flow coupon"),
+    ("Series C Bonds", "Series C Coverage", "DSC_SERIES_C", "dsc_series_c", "float", "debt-service coverage"),
+    ("Series C Bonds", "Series C Final Maturity (years)", "SERIES_C_FINAL_MAT_YRS", "series_c_final_mat_yrs", "int", "years from delivery; same 12/15 payment dates as the sub lien"),
+''', "")
+
+_p("inputs.py", '''    ("Developer Contribution", "Applied To (Senior / Subordinate / Series C / Proportional)", "DEVELOPER_CONTRIBUTION_SERIES", "developer_contribution_series", "str", "which series the contribution funds; Proportional spreads it by par"),''',
+   '''    ("Developer Contribution", "Applied To (Senior / Subordinate / Proportional)", "DEVELOPER_CONTRIBUTION_SERIES", "developer_contribution_series", "str", "which series the contribution funds; Proportional spreads it by par"),''')
+
+_p("inputs.py", '''        type="list", formula1='"Senior,Subordinate,Series C,Proportional"',''',
+   '''        type="list", formula1='"Senior,Subordinate,Proportional"',''')
 
 
 

@@ -34,9 +34,10 @@ from .debt_service import (
     standard_dsrf, size_senior_with_dynamic_dsrf,
 )
 from .subordinate import SubordinateLien, SurplusFund
-from .sources_uses import SourcesUses, first_financing_sources_uses
+from .series_c import size_series_c, SeriesCResult
+from .sources_uses import SourcesUses, first_financing_sources_uses, allocate_contribution
 from .refunding import RefundingAnalysis, RefundingResult
-from .report import build_excel_report
+from .report import build_excel_report, deliverable_basename
 from .forecast_report import build_forecast_report
 from .scenarios import Scenario, build_scenarios
 from .inputs import write_inputs_workbook, load_inputs_workbook
@@ -63,11 +64,15 @@ __all__ = [
     "size_senior_with_dynamic_dsrf",
     "SubordinateLien",
     "SurplusFund",
+    "size_series_c",
+    "SeriesCResult",
     "SourcesUses",
     "first_financing_sources_uses",
+    "allocate_contribution",
     "RefundingAnalysis",
     "RefundingResult",
     "build_excel_report",
+    "deliverable_basename",
     "build_forecast_report",
     "Scenario",
     "build_scenarios",

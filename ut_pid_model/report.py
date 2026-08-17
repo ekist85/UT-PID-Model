@@ -201,6 +201,40 @@ def _county_line(cfg, suffix: str = "") -> str:
     return base + suffix
 
 
+def _today_str() -> str:
+    from datetime import date as _dt
+    _t = _dt.today()
+    return f"{_t.strftime('%B')} {_t.day}, {_t.year}"
+
+
+def _brand_line(cfg, lots=None) -> str:
+    """Reimbursement Analysis · {district} · {N} Lots · Tierra Financial Advisors."""
+    if lots is None:
+        lots = getattr(cfg, "_doc_lots", None)
+    lot_txt = f"{lots:,} Lots" if lots else None
+    return "  ·  ".join(x for x in [
+        "Reimbursement Analysis", cfg.pid_name or None, lot_txt,
+        "Tierra Financial Advisors"] if x)
+
+
+def deliverable_basename(cfg, lots=None) -> str:
+    """
+    Filesystem-safe base name for the deliverables, in the requested title order:
+    ``<today> - Reimbursement Analysis - <district> - <N> Lots - Tierra Financial
+    Advisors``.  A per-file descriptor (Memo / Forecast Exhibits) is appended by
+    the caller to distinguish the three outputs.
+    """
+    import re
+    if lots is None:
+        lots = getattr(cfg, "_doc_lots", None)
+    parts = [_today_str(), "Reimbursement Analysis",
+             cfg.pid_name or "Colorado Metro District"]
+    if lots:
+        parts.append(f"{lots:,} Lots")
+    parts.append("Tierra Financial Advisors")
+    return re.sub(r'[\\/:*?"<>|]+', "", " - ".join(parts)).strip()
+
+
 def _title(ws, cfg, lines: list[str], last_col: int):
     """
     Standard three-row title band, in the order requested for the deliverables:
@@ -210,16 +244,8 @@ def _title(ws, cfg, lines: list[str], last_col: int):
          district name, now folded into row 2).
     Kept to three physical rows so every sheet's header row (row 5) is unaffected.
     """
-    from datetime import date as _dt
-    _t = _dt.today()
-    today = f"{_t.strftime('%B')} {_t.day}, {_t.year}"
-    lots = getattr(cfg, "_doc_lots", None)
-    lot_txt = f"{lots:,} Lots" if lots else None
-    brand = "  ·  ".join(x for x in [
-        "Reimbursement Analysis", cfg.pid_name or None, lot_txt,
-        "Tierra Financial Advisors"] if x)
     subtitle = " — ".join(str(x) for x in lines[1:] if x)
-    rows = [today, brand, subtitle]
+    rows = [_today_str(), _brand_line(cfg), subtitle]
     for i, text in enumerate(rows, 1):
         ws.merge_cells(start_row=i, start_column=1, end_row=i, end_column=last_col)
         c = ws.cell(row=i, column=1, value=text)
@@ -630,31 +656,43 @@ def _build_ds_sheet(ws, cfg, tranche, title, sm=None, target_coverage=None):
 
 
 # ── First-financing Sources & Uses (official-statement format) ───────────────
-def _build_su_first_sheet(ws, cfg, senior, sub_result, surplus_fund=None, dev=None):
+def _build_su_first_sheet(ws, cfg, senior, sub_result, surplus_fund=None, dev=None,
+                          series_c=None, contribution=None):
     """
     Sources & Uses laid out in the standard official-statement format: a
-    Senior-lien column, a Subordinate cash-flow column, and a Total, with the
-    Sources / Uses blocks, Key Assumptions, Bond Statistics, and Taxing-Authority
-    assumption sections beneath.
+    Senior-lien column, a Subordinate cash-flow column, an optional Series C
+    cash-flow column, and a Total, with the Sources / Uses blocks, Key
+    Assumptions, Bond Statistics, and Taxing-Authority assumption sections
+    beneath.  A developer cash contribution (if any) shows as its own source
+    line, allocated per the chosen series.
     """
-    LBL, SR, SB, TOT = 1, 2, 3, 4
-    widths = [(LBL, 44), (SR, 19), (SB, 21), (TOT, 18)]
-    for c, w in widths:
-        ws.column_dimensions[get_column_letter(c)].width = w
-
     sub_par = sub_result.par_amount if sub_result else (cfg.sub_par or 0.0)
     senior_par = senior.par_amount
+    sc_par = series_c.par_amount if series_c is not None else 0.0
+    has_c = sc_par > 0
     yr = cfg.delivery.year
+
+    LBL, SR, SB = 1, 2, 3
+    SC, TOT = (4, 5) if has_c else (None, 4)
+    widths = [(LBL, 44), (SR, 19), (SB, 21)] + ([(SC, 19)] if has_c else []) + [(TOT, 18)]
+    for c, w in widths:
+        ws.column_dimensions[get_column_letter(c)].width = w
 
     capi = sum(p.capitalized_interest for p in senior.schedule)
     dsrf = senior.dsrf_deposit
     prem_sr = senior.total_premium
     uwd_sr = cfg.uwd_senior * senior_par
     uwd_sb = cfg.uwd_sub * sub_par
+    uwd_sc = cfg.uwd_sub * sc_par
     coi = cfg.coi
-    reimb_sr = senior_par + prem_sr - dsrf - capi - uwd_sr - coi
-    reimb_sb = sub_par - uwd_sb
-    src_sr, src_sb = senior_par + prem_sr, sub_par
+    dc = contribution or {"senior": 0.0, "subordinate": 0.0, "series_c": 0.0}
+    total_dc = dc["senior"] + dc["subordinate"] + dc["series_c"]
+    reimb_sr = senior_par + prem_sr - dsrf - capi - uwd_sr - coi + dc["senior"]
+    reimb_sb = sub_par - uwd_sb + dc["subordinate"]
+    reimb_sc = sc_par - uwd_sc + dc["series_c"]
+    src_sr = senior_par + prem_sr + dc["senior"]
+    src_sb = sub_par + dc["subordinate"]
+    src_sc = sc_par + dc["series_c"]
 
     # ── Title block ──────────────────────────────────────────────────────────
     def _band(r, text, font=_TITLE_FONT, fill=_BLUE):
@@ -663,13 +701,14 @@ def _build_su_first_sheet(ws, cfg, senior, sub_result, surplus_fund=None, dev=No
         c.alignment = _CENTER
         for cc in range(1, TOT + 1):
             ws.cell(row=r, column=cc).fill = fill
-    _band(1, cfg.pid_name or "Metropolitan District")
+    lots = dev.total_lots if dev is not None else None
     loc = " / ".join([x for x in [cfg.city, _county_line(cfg)] if x])
-    _band(2, loc, font=_WHITE_FONT)
-    _band(3, f"Development Projections at {cfg.effective_ds_mill_levy:.3f} Mills for Debt Service",
+    _band(1, _today_str())
+    _band(2, _brand_line(cfg, lots), font=_WHITE_FONT)
+    _band(3, (f"{loc}  ·  " if loc else "")
+          + f"Development Projections at {cfg.effective_ds_mill_levy:.3f} Mills for Debt Service",
           font=_WHITE_FONT)
     rating = "Investment Grade" if cfg.ig_rated == "Yes" else "Non-Rated"
-    lots = dev.total_lots if dev is not None else ""
     _band(4, f"Scenario: {rating} / {cfg.reassess_rate:.2%} Reassessment"
              + (f" / {lots} Lots" if lots else ""), font=_WHITE_FONT)
     ws.cell(row=6, column=1, value=f"--- Series {yr} Financing ---").font = _BOLD
@@ -682,19 +721,24 @@ def _build_su_first_sheet(ws, cfg, senior, sub_result, surplus_fund=None, dev=No
         ws.cell(row=r, column=1).font = _HDR_FONT
 
     def colhdr(r):
-        for c, lbl in [(SR, f"Senior Lien Bonds\nSeries {yr}A"),
-                       (SB, f"Subordinate Lien\nCashflow Bonds\nSeries {yr}B"),
-                       (TOT, "Total")]:
+        hdrs = [(SR, f"Senior Lien Bonds\nSeries {yr}A"),
+                (SB, f"Subordinate Lien\nCashflow Bonds\nSeries {yr}B")]
+        if has_c:
+            hdrs.append((SC, f"Series C\nCashflow Bonds\nSeries {yr}C"))
+        hdrs.append((TOT, "Total"))
+        for c, lbl in hdrs:
             cell = ws.cell(row=r, column=c, value=lbl)
             cell.fill = _LIGHT; cell.font = _HDR_FONT; cell.border = _BORDER; cell.alignment = _CENTER
         ws.row_dimensions[r].height = 42
 
-    def line(r, label, sv, bv, tv=None, *, fmt=_DOLLAR, total=False, reimb=False, indent=True):
+    def line(r, label, sv, bv, cv=0.0, tv=None, *, fmt=_DOLLAR, total=False, reimb=False, indent=True):
         fill = _TOTAL if total else (_GREEN if reimb else _WHITE)
         font = _TOTAL_FONT if total else (_BOLD if reimb else _BODY)
         _cell(ws, r, LBL, ("  " if indent else "") + label, fill, font, align=_LEFT)
-        for c, v in [(SR, sv), (SB, bv), (TOT, tv if tv is not None else
-                     ((sv or 0) + (bv or 0)))]:
+        if tv is None:
+            tv = (sv or 0) + (bv or 0) + ((cv or 0) if has_c else 0)
+        vals = [(SR, sv), (SB, bv)] + ([(SC, cv)] if has_c else []) + [(TOT, tv)]
+        for c, v in vals:
             if v is None:                       # not applicable — leave cleanly blank
                 ws.cell(row=r, column=c).fill = fill
             else:                               # show the value, including real zeros
@@ -704,22 +748,24 @@ def _build_su_first_sheet(ws, cfg, senior, sub_result, surplus_fund=None, dev=No
     # ── Sources and Uses ─────────────────────────────────────────────────────
     section(8, "Sources and Uses"); r = 10
     colhdr(r); r += 1
-    line(r, "Par Amount of Bonds", senior_par, sub_par); r += 1
+    line(r, "Par Amount of Bonds", senior_par, sub_par, sc_par); r += 1
     if abs(prem_sr) > 0.5:
-        line(r, "Plus: Premium / (Discount)", prem_sr, 0.0); r += 1
-    if surplus_fund is not None:
-        line(r, "Existing Senior Surplus Fund Balance", 0.0, 0.0); r += 1
-    line(r, "TOTAL SOURCES OF FUNDS:", src_sr, src_sb, total=True, indent=False); r += 2
+        line(r, "Plus: Premium / (Discount)", prem_sr, 0.0, 0.0); r += 1
+    # New money has no existing senior surplus fund balance (that source appears
+    # only in the refunding Sources & Uses).
+    if total_dc:
+        line(r, "Developer Contribution", dc["senior"], dc["subordinate"], dc["series_c"]); r += 1
+    line(r, "TOTAL SOURCES OF FUNDS:", src_sr, src_sb, src_sc, total=True, indent=False); r += 2
 
     section(r, "Uses of Funds"); r += 2
     colhdr(r); r += 1
-    line(r, "Estimated Reimbursement Amount", reimb_sr, reimb_sb, reimb=True); r += 1
-    line(r, "Debt Service Reserve Fund", dsrf, 0.0); r += 1
-    line(r, "Capitalized Interest", capi, 0.0); r += 1
-    line(r, "Underwriters' Discount", uwd_sr, uwd_sb); r += 1
-    line(r, "Costs of Issuance", coi, None, tv=coi); r += 1
+    line(r, "Estimated Reimbursement Amount", reimb_sr, reimb_sb, reimb_sc, reimb=True); r += 1
+    line(r, "Debt Service Reserve Fund", dsrf, 0.0, 0.0); r += 1
+    line(r, "Capitalized Interest", capi, 0.0, 0.0); r += 1
+    line(r, "Underwriters' Discount", uwd_sr, uwd_sb, uwd_sc); r += 1
+    line(r, "Costs of Issuance", coi, None, None, tv=coi); r += 1
     line(r, "TOTAL USES OF FUNDS:",
-         reimb_sr + dsrf + capi + uwd_sr + coi, reimb_sb + uwd_sb,
+         reimb_sr + dsrf + capi + uwd_sr + coi, reimb_sb + uwd_sb, reimb_sc + uwd_sc,
          total=True, indent=False); r += 2
 
     # ── Bond statistics (computed) ───────────────────────────────────────────
@@ -750,29 +796,49 @@ def _build_su_first_sheet(ws, cfg, senior, sub_result, surplus_fund=None, dev=No
         sb_first_mat = min((d for d, _ in sb_prin), default=None)
         sb_final = max((d for d, _ in sb_gross), default=None)
 
+    # Series C cash-flow bond statistics (same basis as the sub lien).
+    sc_avg_life = sc_total_ds = sc_max_ds = 0.0
+    sc_arb_tic = None
+    sc_first_mat = sc_final = None
+    if has_c and series_c.rows:
+        pm, pd = cfg.prin_maturity, cfg.prin_maturity_day_sub
+        sc_prin = [(_date(rr["year"], pm, pd), rr["principal_paid"])
+                   for rr in series_c.rows if rr["principal_paid"]]
+        sc_gross = [(_date(rr["year"], pm, pd), rr["total_paid"])
+                    for rr in series_c.rows if rr["total_paid"]]
+        sc_avg_life = _avg_life(sc_prin, cfg.delivery, sc_par)
+        sc_total_ds = series_c.total_payments
+        sc_max_ds = max((rr["total_paid"] for rr in series_c.rows), default=0.0)
+        sc_arb_tic = _tic(sc_gross, sc_par - uwd_sc, cfg.delivery)
+        sc_first_mat = min((d for d, _ in sc_prin), default=None)
+        sc_final = max((d for d, _ in sc_gross), default=None)
+
     # ── Key assumptions ──────────────────────────────────────────────────────
     section(r, "Key Assumptions:"); r += 2
     DATEFMT = 'mm/dd/yyyy'
-    def drow(r, label, sv, bv=None, tv=None, fmt=_DOLLAR):
+    def drow(r, label, sv, bv=None, tv=None, cv=None, fmt=_DOLLAR):
         _cell(ws, r, LBL, label, _WHITE, _BODY, align=_LEFT)
         # A district-wide value (only the Total given) is shown once, beside the
         # label, rather than leaving the per-lien columns as empty boxes.
-        if sv is None and bv is None and tv is not None:
+        if sv is None and bv is None and cv is None and tv is not None:
             _cell(ws, r, SR, tv, _WHITE, _BODY, fmt=fmt,
                   align=(_CENTER if fmt == DATEFMT else _RIGHT))
             return
-        for c, v in [(SR, sv), (SB, bv), (TOT, tv)]:
+        pairs = [(SR, sv), (SB, bv)] + ([(SC, cv)] if has_c else []) + [(TOT, tv)]
+        for c, v in pairs:
             if v is None:                       # not applicable — leave cleanly blank
                 continue
             _cell(ws, r, c, v, _WHITE, _BODY, fmt=fmt,
                   align=(_CENTER if fmt == DATEFMT else _RIGHT))
-    drow(r, "Delivery Date", cfg.delivery, cfg.delivery, cfg.delivery, fmt=DATEFMT); r += 1
+    drow(r, "Delivery Date", cfg.delivery, cfg.delivery, cfg.delivery,
+         cv=(cfg.delivery if has_c else None), fmt=DATEFMT); r += 1
     drow(r, "First Interest Date", sr_first_int, fmt=DATEFMT); r += 1
-    drow(r, "First Maturity Date", sr_first_mat, sb_first_mat, fmt=DATEFMT); r += 1
-    drow(r, "Final Maturity Date", sr_final, sb_final, fmt=DATEFMT); r += 1
+    drow(r, "First Maturity Date", sr_first_mat, sb_first_mat, cv=sc_first_mat, fmt=DATEFMT); r += 1
+    drow(r, "Final Maturity Date", sr_final, sb_final, cv=sc_final, fmt=DATEFMT); r += 1
     drow(r, "First Par Call Date", cfg.par_call_date, fmt=DATEFMT); r += 1
     drow(r, f"Capitalized Interest Period ({cfg.capi_term}mos)", cfg.capi_end_date, fmt=DATEFMT); r += 1
-    drow(r, "Debt Service Coverage", cfg.dsc_senior, cfg.dsc_sub, fmt='0.00"x"'); r += 1
+    drow(r, "Debt Service Coverage", cfg.dsc_senior, cfg.dsc_sub,
+         cv=(cfg.dsc_series_c if has_c else None), fmt='0.00"x"'); r += 1
     drow(r, "Reassessment", None, None, cfg.reassess_rate, fmt='0.00%'); r += 1
     if surplus_fund is not None:
         drow(r, "Senior Lien Bonds Surplus Fund Target", surplus_fund.target, fmt=_DOLLAR); r += 1
@@ -780,11 +846,14 @@ def _build_su_first_sheet(ws, cfg, senior, sub_result, surplus_fund=None, dev=No
 
     # ── Bond statistics ──────────────────────────────────────────────────────
     section(r, "Bond Statistics:"); r += 2
-    drow(r, "Average Life (years)", sr_avg_life, sb_avg_life or None, fmt='0.00'); r += 1
-    drow(r, "Arbitrage TIC", sr_arb_tic, sb_arb_tic, fmt='0.000%'); r += 1
+    drow(r, "Average Life (years)", sr_avg_life, sb_avg_life or None,
+         cv=(sc_avg_life or None), fmt='0.00'); r += 1
+    drow(r, "Arbitrage TIC", sr_arb_tic, sb_arb_tic, cv=sc_arb_tic, fmt='0.000%'); r += 1
     drow(r, "All-in TIC", sr_allin_tic, fmt='0.000%'); r += 1
-    drow(r, "Maximum Annual Debt Service", sr_max_ds, sb_max_ds or None, fmt=_DOLLAR); r += 1
-    drow(r, "Total Debt Service", sr_total_ds, sb_total_ds or None, fmt=_DOLLAR); r += 1
+    drow(r, "Maximum Annual Debt Service", sr_max_ds, sb_max_ds or None,
+         cv=(sc_max_ds or None), fmt=_DOLLAR); r += 1
+    drow(r, "Total Debt Service", sr_total_ds, sb_total_ds or None,
+         cv=(sc_total_ds or None), fmt=_DOLLAR); r += 1
     r += 1
 
     # ── Taxing-authority & fee assumptions ───────────────────────────────────
@@ -834,10 +903,12 @@ def _build_su_refunding_sheet(ws, cfg, refunding_result, dev=None):
         c = ws.cell(row=r, column=1, value=text); c.font = font; c.alignment = _CENTER
         for cc in range(1, TOT + 1):
             ws.cell(row=r, column=cc).fill = fill
-    _band(1, cfg.pid_name or "Metropolitan District")
+    lots = dev.total_lots if dev is not None else None
     loc = " / ".join([x for x in [cfg.city, _county_line(cfg)] if x])
-    _band(2, loc, font=_WHITE_FONT)
-    _band(3, f"Development Projections at {cfg.effective_ds_mill_levy:.3f} Mills for Debt Service",
+    _band(1, _today_str())
+    _band(2, _brand_line(cfg, lots), font=_WHITE_FONT)
+    _band(3, (f"{loc}  ·  " if loc else "")
+          + f"Development Projections at {cfg.effective_ds_mill_levy:.3f} Mills for Debt Service",
           font=_WHITE_FONT)
     ws.cell(row=5, column=1, value=f"--- Series {yr} Refunding Financing ---").font = _BOLD
 
@@ -1125,6 +1196,126 @@ def _build_sub_sheet(ws, cfg, sub_result, series_label=""):
     ws.freeze_panes = "A7"
 
 
+# ── Series C cash-flow sheet ──────────────────────────────────────────────────
+def _build_series_c_sheet(ws, cfg, series_c):
+    """
+    Series C cash-flow bonds sized against a SEPARATE assessment: created AV
+    biennially reassessed at the Series C rate, net of senior and sub debt
+    service.  Shows the revenue derivation and the accreting amortization.
+    """
+    rr = series_c.reassess_rate
+    _title(ws, cfg, [cfg.pid_name,
+                f"Series C Cash-Flow Bonds  ·  {series_c.coverage:.2f}x coverage  ·  "
+                f"separate assessment @ {rr:.0%} reassessment",
+                f"Par ${series_c.par_amount:,.0f}  ·  {series_c.rate:.2%}  (unpaid "
+                f"interest accretes).  Revenue = {rr:.0%}-reassessed net revenue "
+                f"− senior DS − subordinate DS."], 14)
+    NC = 14
+    band = PatternFill("solid", fgColor="1F4E79")
+    groups = [
+        ("", [(1, "Payment\nDate", 12), (2, "Rate", 8), (3, "Yield", 8), (4, "Price", 8)]),
+        (f"REVENUE AVAILABLE TO SERIES C  ({rr:.0%}-reassessed base)",
+         [(5, f"{rr:.0%}-Reassessed\nNet Revenue", 15), (6, "− Senior\nDebt Service", 14),
+          (7, "− Subordinate\nDebt Service", 14), (8, "Available\nto Series C", 14)]),
+        ("SERIES C DEBT SERVICE",
+         [(9, "After\nCoverage", 12), (10, "Interest\nPaid", 12), (11, "Accrued Int.\nBalance", 13),
+          (12, "Principal\nPaid", 12), (13, "Principal\nBalance", 13), (14, "Total\nPaid", 12)]),
+    ]
+    for gname, cols in groups:
+        if gname:
+            first, last = cols[0][0], cols[-1][0]
+            ws.merge_cells(start_row=5, start_column=first, end_row=5, end_column=last)
+            gc = ws.cell(row=5, column=first, value=gname)
+            gc.fill = band; gc.font = Font(name="Calibri", bold=True, color="FFFFFF", size=9)
+            gc.alignment = _CENTER
+            for cc in range(first, last + 1):
+                ws.cell(row=5, column=cc).fill = band
+            for col, lbl, w in cols:
+                _hdr(ws, 6, col, lbl, w)
+        else:
+            for col, lbl, w in cols:
+                ws.merge_cells(start_row=5, start_column=col, end_row=6, end_column=col)
+                _hdr(ws, 5, col, lbl, w)
+
+    _PCT = '0.000%'
+    bold = {5, 8, 14}
+    by_year = {r["year"]: r for r in series_c.rows}
+    years = list(range(series_c.first_year, series_c.final_year + 1))
+    for i, y in enumerate(years):
+        rw = 7 + i
+        fill = _GRAY if i % 2 else _WHITE
+        for c in range(1, NC + 1):
+            cc = ws.cell(row=rw, column=c); cc.fill = fill; cc.border = _BORDER
+        _cell(ws, rw, 1, _date(y, cfg.prin_maturity, cfg.prin_maturity_day_sub),
+              fill, fmt="MM/DD/YYYY", align=_LEFT)
+        if i == 0:
+            _cell(ws, rw, 2, series_c.rate, fill, fmt=_PCT)
+            _cell(ws, rw, 3, series_c.rate, fill, fmt=_PCT)
+            _cell(ws, rw, 4, 100.0, fill, fmt='0.000')
+        rev = series_c.rev_by_year.get(y, 0.0)
+        sr = series_c.senior_ds_by_year.get(y, 0.0)
+        sb = series_c.sub_ds_by_year.get(y, 0.0)
+        avail = series_c.available_by_year.get(y, 0.0)
+        cells = {5: rev, 6: -sr, 7: -sb, 8: avail}
+        r = by_year.get(y)
+        if r:
+            cells.update({9: r["coverage_adj_available"], 10: r["interest_paid"],
+                          11: r["accrued_balance"], 12: r["principal_paid"], 14: r["total_paid"]})
+        for c, v in cells.items():
+            _cell(ws, rw, c, round(v) or None, fill,
+                  _BOLD if c in bold else _BODY, fmt=_DOLLAR)
+        if r:
+            _cell(ws, rw, 13, r["principal_balance"], fill, fmt=_DOLLAR)
+        else:
+            _cell(ws, rw, 13, 0, fill, fmt=_DOLLAR)
+
+    tot = 7 + len(years)
+    for c in range(1, NC + 1):
+        ws.cell(row=tot, column=c).fill = _TOTAL
+    _cell(ws, tot, 1, "Total", _TOTAL, _TOTAL_FONT, align=_CENTER)
+    _cell(ws, tot, 8, round(sum(series_c.available_by_year.values())), _TOTAL, _TOTAL_FONT, fmt=_DOLLAR)
+    _cell(ws, tot, 10, series_c.total_interest_paid, _TOTAL, _TOTAL_FONT, fmt=_DOLLAR)
+    _cell(ws, tot, 12, series_c.total_principal_paid, _TOTAL, _TOTAL_FONT, fmt=_DOLLAR)
+    _cell(ws, tot, 14, series_c.total_payments, _TOTAL, _TOTAL_FONT, fmt=_DOLLAR)
+
+    # ── Bond statistics (computed) ───────────────────────────────────────────
+    pm, pd = cfg.prin_maturity, cfg.prin_maturity_day_sub
+    sc_prin = [(_date(rr["year"], pm, pd), rr["principal_paid"])
+               for rr in series_c.rows if rr["principal_paid"]]
+    sc_gross = [(_date(rr["year"], pm, pd), rr["total_paid"])
+                for rr in series_c.rows if rr["total_paid"]]
+    uwd = cfg.uwd_sub * series_c.par_amount
+    DATEFMT = 'mm/dd/yyyy'
+    stats = [
+        ("Par Amount", series_c.par_amount, _DOLLAR),
+        ("Coupon (accreting)", series_c.rate, '0.000%'),
+        ("Debt Service Coverage", series_c.coverage, '0.00"x"'),
+        ("Average Life (years)", _avg_life(sc_prin, cfg.delivery, series_c.par_amount), '0.00'),
+        ("Arbitrage TIC", _tic(sc_gross, series_c.par_amount - uwd, cfg.delivery), '0.000%'),
+        ("Maximum Annual Debt Service",
+         max((rr["total_paid"] for rr in series_c.rows), default=0.0), _DOLLAR),
+        ("Total Debt Service", series_c.total_payments, _DOLLAR),
+        ("First Maturity Date", min((d for d, _ in sc_prin), default=None), DATEFMT),
+        ("Final Maturity Date", max((d for d, _ in sc_gross), default=None), DATEFMT),
+        ("Ending Accrued Interest", series_c.ending_accrued_interest, _DOLLAR),
+        ("Fully Repaid", "Yes" if series_c.fully_repaid else "No", None),
+    ]
+    r = tot + 2
+    ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=NC)
+    ws.cell(row=r, column=1, value="Bond Statistics:").font = _HDR_FONT
+    for cc in range(1, NC + 1):
+        ws.cell(row=r, column=cc).fill = _LIGHT
+    r += 2
+    for label, value, fmt in stats:
+        ws.cell(row=r, column=1, value=label).font = _BODY
+        ws.cell(row=r, column=1).alignment = _LEFT
+        if value is not None:
+            align = _CENTER if fmt in (DATEFMT, None) else _RIGHT
+            _cell(ws, r, 5, value, _WHITE, _BODY, fmt=fmt, align=align)
+        r += 1
+    ws.freeze_panes = "A7"
+
+
 # ── Senior surplus fund sheet ─────────────────────────────────────────────────
 def _build_surplus_sheet(ws, cfg, surplus_fund):
     _title(ws, cfg, [cfg.pid_name, "Senior Surplus / Debt-Service-Reserve Fund",
@@ -1327,6 +1518,8 @@ def build_excel_report(
     sub_result=None,
     surplus_fund=None,
     dev=None,
+    series_c=None,
+    contribution=None,
     output_path: str = "output/ut_pid_model_output.xlsx",
 ) -> str:
     wb = openpyxl.Workbook()
@@ -1358,7 +1551,8 @@ def build_excel_report(
     _build_capi_fund_sheet(wb.create_sheet("CAPI Fund - First"), cfg, senior)
 
     _build_su_first_sheet(wb.create_sheet("Sources & Uses - First"), cfg, senior,
-                          sub_result, surplus_fund, dev)
+                          sub_result, surplus_fund, dev, series_c=series_c,
+                          contribution=contribution)
 
     _build_coverage_sheet(
         wb.create_sheet("Senior Lien Coverage"), cfg, sm, senior,
@@ -1384,6 +1578,9 @@ def build_excel_report(
         _build_sub_sheet(wb.create_sheet("Subordinate Lien - Refunding"), cfg,
                          refunding_result.refunding_sub, series_label=" — Refunding")
 
+    if series_c is not None:
+        _build_series_c_sheet(wb.create_sheet("Series C Cash-Flow"), cfg, series_c)
+
     # Optional-redemption (call) schedule — derived output.
     _build_call_schedule_sheet(wb.create_sheet("Call Schedule"), cfg, refunding_result)
 
@@ -1397,7 +1594,8 @@ def build_excel_report(
         "Summary - Light", "Summary - Detail", "Builder Lot Inventory Value",
         "Residential Value", "Summary", "Development Projections",
         "Sources & Uses - First", "Senior Lien DS - First",
-        "Subordinate Lien", "Senior Surplus Fund", "CAPI Fund - First", "O&M Revenue",
+        "Subordinate Lien", "Series C Cash-Flow", "Senior Surplus Fund",
+        "CAPI Fund - First", "O&M Revenue",
         "Sources & Uses - Refunding", "Senior Lien DS - Refunding",
         "Subordinate Lien - Refunding",
         "Senior Lien Coverage", "Call Schedule", "Notes",

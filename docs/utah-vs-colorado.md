@@ -346,7 +346,7 @@ Two smaller Utah-specific departures ride alongside:
 
 * **The memo prints negative amounts in accounting parentheses.** Colorado's
   `_money` helper renders `$-914,919`. Under Utah's fixed levy caps the *senior*
-  refunding on its own does return less than it costs — roughly −$915,000 before
+  refunding on its own does return less than it costs — roughly −$313,000 before
   the refunding subordinate lien is added — so the memo has to read correctly
   when a negative lands in a table: `($914,919)`.
 * **Colorado vocabulary is scrubbed out of internals, not just labels.** Locals
@@ -368,16 +368,16 @@ delivery date.
 
 That matters more in Utah than it does in Colorado. At 3 mills the senior
 refunding alone does not pay: refunding par plus the released reserve and the
-surplus on hand comes to roughly $915,000 *less* than the cost of defeasing both
+surplus on hand comes to roughly $313,000 *less* than the cost of defeasing both
 liens and covering the transaction costs. Colorado's 50-plus mills leave enough
 headroom that the senior refunding can carry itself; Utah's fixed § 17D-4-303
 cap does not.
 
 What turns it positive is the refunding sub. Defeasing the new-money
 subordinate note hands the residual surplus back, and the refunding sub is sized
-against it — $1,997,000 on the reference deal, against $1,730,000 of new-money
-sub retired. Net new money goes from −$914,919 to **+$1,052,126**, and total
-developer reimbursement from $4,524,025 to **$6,491,070**.
+against it — $2,091,000 on the reference deal, against $1,730,000 of new-money
+sub retired. Net new money goes from −$312,944 to **+$1,746,691**, and total
+developer reimbursement to **$7,185,635**.
 
 The number to read is therefore not an interest saving. It is the district
 re-levering the same residual surplus at the subordinate rate, on a lien that
@@ -387,3 +387,47 @@ accretes at 8.125% and runs to 2059. Worth stating plainly to anyone who sees
 *Code:* `RefundingAnalysis.run` (sizes it), `RefundingResult.refunding_sub` /
 `.refunding_sub_par`, the **Subordinate Lien – Refunding** tab, and the memo's
 bond-program table.
+
+---
+
+## 15. The projection horizon
+
+Colorado now runs the development, taxable-value, revenue and summary
+projections for `PROJECTION_YEARS` (default **40**) years from delivery, rather
+than stopping at the senior's final maturity. The horizon floors at the longest
+bond maturity, so a short display horizon can never truncate the revenue a bond
+sizes against — sizing depends on the final-maturity inputs alone.
+
+For Utah that lands the projection at 2064 instead of 2054, and it moves one
+number: the **refunding** used to size against a revenue stream that had
+collapsed to zero after the senior's 2054 maturity. With the full stream, the
+refunding senior par goes $6,925,000 → $7,530,000 and the refunding sub
+$1,997,000 → $2,091,000. First-financing sizing is untouched — senior par
+$5,665,000, sub par $1,730,000, reimbursement $5,438,944 — because those bonds
+mature inside the old horizon either way.
+
+*Code:* `ModelConfig.projection_years`, `DeveloperProjections.build`
+(`last_year = max(horizon, longest bond maturity)`), and the `PROJECTION_YEARS`
+row on the Inputs page.
+
+---
+
+## 16. Series C is carried inert
+
+Colorado added an optional third lien — Series C cash-flow bonds — sized against
+a **separate** assessment that reassesses the created value at its own rate
+(6% in the Colorado default). The module ports across unchanged, but the Utah
+model keeps it off: `SIZE_SERIES_C` defaults to `"No"` and the Series C rows are
+patched out of the Inputs template.
+
+The reason is statutory, not mechanical. A Utah PID's levy is a fixed rate per
+dollar of taxable value under § 17D-4-303, applied to the county's single
+assessment roll; whether the district may pledge a *second*, separately
+reassessed valuation of the same property has not been worked through here.
+Offering an untested toggle in a client-facing template invites someone to size
+a lien the statute may not support. Nothing about Series C appears in any Utah
+deliverable — no tab, no memo row, no input.
+
+The developer-contribution rows added alongside Series C **are** ported: a cash
+contribution is a plain source of funds, applied to the senior lien, the
+subordinate lien, or proportionally by par, and it defaults to $0.
