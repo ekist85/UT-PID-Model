@@ -298,26 +298,21 @@ class ModelConfig:
     commercial_assessment_ratio: float = 0.29   # commercial taxable ratio
     comm_assessment_lag_years: int = 2          # market-value-to-collection lag
     capital_improv_fee: float = 0       # CAPITAL_IMPROV_FEE
-    # Annual district administration — accounting, audit, legal, assessor and
-    # continuing-disclosure filings — charged against pledged revenue.  Colorado
-    # books this as the O&M carveout against a separate operations levy; a Utah
-    # PID typically has no operations levy, so the cost lands here.
-    admin_cost: float = 53_060         # ADMIN_COST (base year)
-    admin_cost_av_limit: float = 0     # ADMIN_COST_AV_LIMIT
-    admin_growth_rate: float = 0.02    # ADMIN_GROWTH_RATE (inflates the base)
-    # District operations & maintenance — landscaping, parks and trails, snow
-    # removal, street lighting, utilities on the district improvements.  A Utah
-    # PID rarely carries a separate operations levy, so this is paid out of the
-    # same pledged revenue as debt service and comes off the top: it is netted
-    # from the revenue available to the senior AND the subordinate lien.
-    # Defaults to zero — an operating budget is a district-specific number, not
-    # something to assume.
-    om_expense: float = 0.0            # OM_EXPENSE (base year, $ per year)
-    om_growth_rate: float = 0.03       # OM_GROWTH_RATE (inflates the base)
-    # First collection year that carries district costs — administration and the
-    # trustee fees.  None ⇒ two years after closing: the first roll set with the
-    # bonds outstanding is billed that November, so year 2 is the first with a
-    # full year of collections to charge against.
+    # District operations & maintenance — the single line for what the district
+    # spends each year: administration (accounting, audit, legal, assessor and
+    # continuing-disclosure filings) and operations (landscaping, parks and
+    # trails, snow removal, street lighting, utilities on the improvements).
+    # Colorado carves this out of pledged revenue against a separate operations
+    # levy; a Utah PID rarely has one, so it is paid from the same revenue that
+    # services the bonds and comes off the top — netted from the revenue
+    # available to the senior AND the subordinate lien (see om_expense_for).
+    om_expense: float = 53_060         # OM_EXPENSE (base year, $ per year)
+    om_expense_av_limit: float = 0     # OM_EXPENSE_AV_LIMIT (0 ⇒ no limit)
+    om_growth_rate: float = 0.02       # OM_GROWTH_RATE (inflates the base)
+    # First collection year that carries district costs — O&M and the trustee
+    # fees.  None ⇒ two years after closing: the first roll set with the bonds
+    # outstanding is billed that November, so year 2 is the first with a full
+    # year of collections to charge against.
     district_cost_start_year: Optional[int] = None   # DISTRICT_COST_START_YEAR
     resid_new_value_add: str = "Yes"    # RESID_NEW_VALUE_ADD (senior)
     comm_new_value_add: str = "No"      # COMM_NEW_VALUE_ADD (senior)
@@ -377,31 +372,37 @@ class ModelConfig:
                 self.lot_inventory_taxable_schedule, collection_year, self.lot_inventory_taxable_ratio)
         return self.lot_inventory_ratio(collection_year - 1)
 
-    def district_costs(self, collection_year: int) -> tuple[float, float, float]:
+    def district_costs(self, collection_year: int) -> tuple[float, float]:
         """
-        (administration, senior trustee fee, subordinate trustee fee) charged
-        against pledged revenue in ``collection_year``.
+        (senior trustee fee, subordinate trustee fee) charged against pledged
+        revenue in ``collection_year``.  Nothing is charged before
+        ``district_cost_start_year``; the fees are flat thereafter.
 
-        Nothing is charged before ``district_cost_start_year``; from then on the
-        administration base inflates at ``admin_growth_rate`` and the trustee
-        fees are flat.
+        District O&M is the other standing cost — see ``om_expense_for``, which
+        is netted from both liens rather than the senior alone.
         """
         start = self.district_cost_start_year or (self.delivery.year + 2)
         if collection_year < start:
-            return 0.0, 0.0, 0.0
-        admin = self.admin_cost * (1 + self.admin_growth_rate) ** (collection_year - start)
-        return admin, self.trustee_fee, self.trustee_fee_sub
+            return 0.0, 0.0
+        return self.trustee_fee, self.trustee_fee_sub
 
-    def om_expense_for(self, collection_year: int) -> float:
+    def om_expense_for(self, collection_year: int,
+                       total_av: float | None = None) -> float:
         """
         District operations & maintenance charged against pledged revenue in
-        ``collection_year``.
+        ``collection_year`` — the single line covering district administration
+        and operations alike.
 
-        Nothing is charged before ``district_cost_start_year`` — the same start
-        the administration and trustee fees use — and from then on the base
-        inflates at ``om_growth_rate``.
+        Nothing is charged before ``district_cost_start_year`` (the same start
+        the trustee fees use); from then on the base inflates at
+        ``om_growth_rate``.  If ``om_expense_av_limit`` is set and ``total_av``
+        is above it, the charge stops — the district is assumed to fund itself
+        from an operations levy once the base is large enough.
         """
         if not self.om_expense:
+            return 0.0
+        if (self.om_expense_av_limit and total_av is not None
+                and total_av > self.om_expense_av_limit):
             return 0.0
         start = self.district_cost_start_year or (self.delivery.year + 2)
         if collection_year < start:

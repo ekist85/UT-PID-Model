@@ -135,17 +135,14 @@ class SummaryModel:
 
             # Net revenue available for SENIOR lien debt service (AX):
             #   mill + uniform fee - county collection cost - senior trustee fee
-            #   - annual district administration (inflated, and not charged
-            #     before the district is up and running)
+            #   - district O&M (inflated, and not charged before the district is
+            #     up and running).  O&M is netted from the SUBORDINATE side too —
+            #     see ModelConfig.om_expense_for.
             collection_fee = mill_revenue * cfg.county_collection_fee
-            admin_cost, trustee_fee, trustee_fee_sub = cfg.district_costs(collect)
-            # District O&M comes off the top — see ModelConfig.om_expense_for.
-            om_expense = cfg.om_expense_for(collect)
-            if cfg.admin_cost_av_limit and total_av > cfg.admin_cost_av_limit:
-                admin_cost = 0.0
+            trustee_fee, trustee_fee_sub = cfg.district_costs(collect)
+            om_expense = cfg.om_expense_for(collect, total_av)
             net_senior_revenue = (
-                mill_revenue + uniform_fee - collection_fee - trustee_fee - admin_cost
-                - om_expense
+                mill_revenue + uniform_fee - collection_fee - trustee_fee - om_expense
             )
 
             # Net revenue available for SUBORDINATE lien debt service (BO):

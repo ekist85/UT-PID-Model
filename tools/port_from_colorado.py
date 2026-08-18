@@ -97,9 +97,8 @@ IDENTIFIER_RENAMES = [
     ("oil_gas_av", "centrally_assessed_av"),
     ("has_oil_gas", "has_centrally_assessed"),
     ("oil_gas", "centrally_assessed"),
-    ("om_carveout_av_limit", "admin_cost_av_limit"),
-    ("om_carveout", "admin_cost"),
-    ("om_growth_rate", "admin_growth_rate"),
+    ("om_carveout_av_limit", "om_expense_av_limit"),
+    ("om_carveout", "om_expense"),
     # Locals/keys that still carried Colorado vocabulary.  Utah has no specific
     # ownership tax (it is the § 59-2-405 uniform fee), no TABOR, and no county
     # treasurer's fee netted from the distribution (§ 59-2-1602 funds assessing
@@ -128,9 +127,8 @@ LABEL_SUBS = [
     ("OIL_GAS_EQUIPMENT", "CENTRALLY_ASSESSED_EQUIPMENT"),
     ("OIL_GAS_VALUE", "CENTRALLY_ASSESSED_RATIO"),
     ("OIL_GAS", "CENTRALLY_ASSESSED"),
-    ("OM_CARVEOUT_AV_LIMIT", "ADMIN_COST_AV_LIMIT"),
-    ("OM_CARVEOUT", "ADMIN_COST"),
-    ("OM_GROWTH_RATE", "ADMIN_GROWTH_RATE"),
+    ("OM_CARVEOUT_AV_LIMIT", "OM_EXPENSE_AV_LIMIT"),
+    ("OM_CARVEOUT", "OM_EXPENSE"),
     ("STRICT_BIENNIAL_AV", "HOLD_VALUE_FLAT"),
     ("Schedule of Estimated Assessed Valuation", "Schedule of Estimated Taxable Value"),
     ("Summary of Assessed Values and Net Tax Revenues",
@@ -479,20 +477,24 @@ _p("config.py", '''    reassess_rate: float = 0.02          # REASSESS_RATE (res
     # fair market value instead (the conservative reading).
     lot_inventory_taxable_ratio: float = 0.55   # LOT_INVENTORY_TAXABLE_RATIO''')
 
-_p("config.py", '''    admin_cost: float = 0              # ADMIN_COST
-    admin_cost_av_limit: float = 0     # ADMIN_COST_AV_LIMIT
-    admin_growth_rate: float = 0.02        # ADMIN_GROWTH_RATE''',
-   '''    # Annual district administration — accounting, audit, legal, assessor and
-    # continuing-disclosure filings — charged against pledged revenue.  Colorado
-    # books this as the O&M carveout against a separate operations levy; a Utah
-    # PID typically has no operations levy, so the cost lands here.
-    admin_cost: float = 53_060         # ADMIN_COST (base year)
-    admin_cost_av_limit: float = 0     # ADMIN_COST_AV_LIMIT
-    admin_growth_rate: float = 0.02    # ADMIN_GROWTH_RATE (inflates the base)
-    # First collection year that carries district costs — administration and the
-    # trustee fees.  None ⇒ two years after closing: the first roll set with the
-    # bonds outstanding is billed that November, so year 2 is the first with a
-    # full year of collections to charge against.
+_p("config.py", '''    om_expense: float = 0              # OM_EXPENSE
+    om_expense_av_limit: float = 0     # OM_EXPENSE_AV_LIMIT
+    om_growth_rate: float = 0.02        # OM_GROWTH_RATE''',
+   '''    # District operations & maintenance — the single line for what the district
+    # spends each year: administration (accounting, audit, legal, assessor and
+    # continuing-disclosure filings) and operations (landscaping, parks and
+    # trails, snow removal, street lighting, utilities on the improvements).
+    # Colorado carves this out of pledged revenue against a separate operations
+    # levy; a Utah PID rarely has one, so it is paid from the same revenue that
+    # services the bonds and comes off the top — netted from the revenue
+    # available to the senior AND the subordinate lien (see om_expense_for).
+    om_expense: float = 53_060         # OM_EXPENSE (base year, $ per year)
+    om_expense_av_limit: float = 0     # OM_EXPENSE_AV_LIMIT (0 ⇒ no limit)
+    om_growth_rate: float = 0.02       # OM_GROWTH_RATE (inflates the base)
+    # First collection year that carries district costs — O&M and the trustee
+    # fees.  None ⇒ two years after closing: the first roll set with the bonds
+    # outstanding is billed that November, so year 2 is the first with a full
+    # year of collections to charge against.
     district_cost_start_year: Optional[int] = None   # DISTRICT_COST_START_YEAR''')
 
 # Levy caps replace gallagherization.
@@ -524,20 +526,42 @@ _p("config.py", '''    @property
         override ``mill_levy_comm`` to tax commercial at a different rate.
         """
         return self.mill_levy_comm if self.mill_levy_comm is not None else self.effective_ds_mill_levy''',
-   '''    def district_costs(self, collection_year: int) -> tuple[float, float, float]:
+   '''    def district_costs(self, collection_year: int) -> tuple[float, float]:
         """
-        (administration, senior trustee fee, subordinate trustee fee) charged
-        against pledged revenue in ``collection_year``.
+        (senior trustee fee, subordinate trustee fee) charged against pledged
+        revenue in ``collection_year``.  Nothing is charged before
+        ``district_cost_start_year``; the fees are flat thereafter.
 
-        Nothing is charged before ``district_cost_start_year``; from then on the
-        administration base inflates at ``admin_growth_rate`` and the trustee
-        fees are flat.
+        District O&M is the other standing cost — see ``om_expense_for``, which
+        is netted from both liens rather than the senior alone.
         """
         start = self.district_cost_start_year or (self.delivery.year + 2)
         if collection_year < start:
-            return 0.0, 0.0, 0.0
-        admin = self.admin_cost * (1 + self.admin_growth_rate) ** (collection_year - start)
-        return admin, self.trustee_fee, self.trustee_fee_sub
+            return 0.0, 0.0
+        return self.trustee_fee, self.trustee_fee_sub
+
+    def om_expense_for(self, collection_year: int,
+                       total_av: float | None = None) -> float:
+        """
+        District operations & maintenance charged against pledged revenue in
+        ``collection_year`` — the single line covering district administration
+        and operations alike.
+
+        Nothing is charged before ``district_cost_start_year`` (the same start
+        the trustee fees use); from then on the base inflates at
+        ``om_growth_rate``.  If ``om_expense_av_limit`` is set and ``total_av``
+        is above it, the charge stops — the district is assumed to fund itself
+        from an operations levy once the base is large enough.
+        """
+        if not self.om_expense:
+            return 0.0
+        if (self.om_expense_av_limit and total_av is not None
+                and total_av > self.om_expense_av_limit):
+            return 0.0
+        start = self.district_cost_start_year or (self.delivery.year + 2)
+        if collection_year < start:
+            return 0.0
+        return self.om_expense * (1 + self.om_growth_rate) ** (collection_year - start)
 
     @property
     def mill_levy_cap(self) -> float:
@@ -940,22 +964,22 @@ _p("summary.py", '''            # Net revenue available for SENIOR lien debt ser
             #   mill + Uniform Fee - county collection cost - senior trustee fee - O&M carveout
             collection_fee = mill_revenue * cfg.county_collection_fee
             net_senior_revenue = (
-                mill_revenue + uniform_fee - collection_fee - cfg.trustee_fee - cfg.admin_cost
+                mill_revenue + uniform_fee - collection_fee - cfg.trustee_fee - cfg.om_expense
             )''',
    '''            # Net revenue available for SENIOR lien debt service (AX):
             #   mill + uniform fee - county collection cost - senior trustee fee
-            #   - annual district administration (inflated, and not charged
-            #     before the district is up and running)
+            #   - district O&M (inflated, and not charged before the district is
+            #     up and running).  O&M is netted from the SUBORDINATE side too —
+            #     see ModelConfig.om_expense_for.
             collection_fee = mill_revenue * cfg.county_collection_fee
-            admin_cost, trustee_fee, trustee_fee_sub = cfg.district_costs(collect)
-            if cfg.admin_cost_av_limit and total_av > cfg.admin_cost_av_limit:
-                admin_cost = 0.0
+            trustee_fee, trustee_fee_sub = cfg.district_costs(collect)
+            om_expense = cfg.om_expense_for(collect, total_av)
             net_senior_revenue = (
-                mill_revenue + uniform_fee - collection_fee - trustee_fee - admin_cost
+                mill_revenue + uniform_fee - collection_fee - trustee_fee - om_expense
             )''')
 
 _p("summary.py", '''            net_sub_revenue = mill_revenue + uniform_fee - cfg.trustee_fee_sub''',
-   '''            net_sub_revenue = mill_revenue + uniform_fee - trustee_fee_sub''')
+   '''            net_sub_revenue = mill_revenue + uniform_fee - trustee_fee_sub - om_expense''')
 
 
 # ── subordinate.py ───────────────────────────────────────────────────────────
@@ -1019,16 +1043,16 @@ _p("report.py", '''    base = f"{cfg.county} County, Utah" if cfg.county else "C
 
 _p("report.py", '''        trust = -cfg.trustee_fee if r.total_av > 0 else 0.0
         subtrust = -cfg.trustee_fee_sub if r.total_av > 0 else 0.0
-        om = -cfg.admin_cost if cfg.admin_cost else 0.0''',
-   '''        # District costs come from the same helper the revenue engine uses,
+        om = -cfg.om_expense if cfg.om_expense else 0.0''',
+   '''        # District costs come from the same helpers the revenue engine uses,
         # so the report and the sizing can never disagree.
-        _admin, _trustee, _subtrustee = cfg.district_costs(r.collection_year)
+        _trustee, _subtrustee = cfg.district_costs(r.collection_year)
         trust = -_trustee
         subtrust = -_subtrustee
-        om = -_admin''')
+        om = -r.om_expense''')
 
 _p("report.py", '''        ("om", "− O&M\\nCarveout", 11),''',
-   '''        ("om", "− District\\nAdmin", 11),''')
+   '''        ("om", "− District\\nO&M", 11),''')
 
 _p("report.py", '''                 + (" (adjusted)" if cfg.gallagherization == "Yes" else ""),''',
    '''                 + f" (cap {cfg.mill_levy_cap:.3f})",''')
@@ -1084,11 +1108,11 @@ _p("inputs.py", '''    ("Tax & Valuation", "Primary Residential Taxable Ratio", 
    '''    ("Tax & Valuation", "Primary Residential Taxable Ratio", "RESID_TAXABLE_RATIO", "resid_taxable_ratio", "pct", "55% — the 45% exemption, § 59-2-103"),
     ("Tax & Valuation", "Prior Residential Taxable Ratio", "RESID_TAXABLE_RATIO_PRIOR", "resid_taxable_ratio_prior", "pct", "ratio before the current exemption"),''')
 
-_p("inputs.py", '''    ("O&M", "O&M Carveout", "ADMIN_COST", "admin_cost", "float", "$ carved out of pledged revenue each year for operations"),
+_p("inputs.py", '''    ("O&M", "O&M Carveout", "OM_EXPENSE", "om_expense", "float", "$ carved out of pledged revenue each year for operations"),
 ]''',
-   '''    ("District Costs", "Annual District Administration", "ADMIN_COST", "admin_cost", "float", "$ per year, charged against pledged revenue"),
-    ("District Costs", "District Administration Growth Rate", "ADMIN_GROWTH_RATE", "admin_growth_rate", "pct", "annual inflation on the administration base"),
-    ("District Costs", "District Administration Taxable Value Limit", "ADMIN_COST_AV_LIMIT", "admin_cost_av_limit", "float", "$ — above this taxable value the charge stops; 0 ⇒ no limit"),
+   '''    ("District Costs", "Starting O&M Expense", "OM_EXPENSE", "om_expense", "float", "$ per year of district operations & administration, netted from the revenue available to both liens"),
+    ("District Costs", "O&M Expense Growth Rate", "OM_GROWTH_RATE", "om_growth_rate", "pct", "annual inflation on the O&M base"),
+    ("District Costs", "O&M Expense Taxable Value Limit", "OM_EXPENSE_AV_LIMIT", "om_expense_av_limit", "float", "$ — above this taxable value the charge stops; 0 ⇒ no limit"),
     ("District Costs", "First Year District Costs Are Charged", "DISTRICT_COST_START_YEAR", "district_cost_start_year", "int", "blank ⇒ two years after closing"),
 ]''')
 
@@ -1308,53 +1332,22 @@ _p("inputs.py", '''"Strict Biennial Level-of-Value", "HOLD_VALUE_FLAT"''',
 
 
 
-# ── District operations & maintenance expense ────────────────────────────────
-# Colorado's template exposes a single "O&M Carveout" (renamed here to the
-# district administration line).  A Utah PID typically has no separate
-# operations levy, so its operating budget has to be funded out of the same
-# pledged revenue that services the bonds — which makes the O&M expense a real
-# input to sizing, not a footnote.  Two rows: a starting expense and the
-# inflation that grows it.
+# ── District operations & maintenance ────────────────────────────────────────
+# Colorado's single "O&M Carveout" is the district's standing annual cost, and
+# it stays a single line here: administration (accounting, audit, legal,
+# assessor, continuing disclosure) and operations (landscaping, parks, snow
+# removal, lighting) are the same budget for a Utah PID, which rarely carries a
+# separate operations levy to fund either.  Three Utah refinements:
 #
-# Unlike the administration carveout, this is netted from the revenue available
-# to BOTH liens.  The subordinate lien's own revenue is measured as
-# `net_sub_revenue - net_senior_revenue`, so a cost netted from the senior side
-# alone is handed straight to the sub — which would make an O&M expense *raise*
-# subordinate capacity.  Money the district actually spends is available to
-# neither bond.
-
-_p("config.py", '''    admin_growth_rate: float = 0.02    # ADMIN_GROWTH_RATE (inflates the base)''',
-   '''    admin_growth_rate: float = 0.02    # ADMIN_GROWTH_RATE (inflates the base)
-    # District operations & maintenance — landscaping, parks and trails, snow
-    # removal, street lighting, utilities on the district improvements.  A Utah
-    # PID rarely carries a separate operations levy, so this is paid out of the
-    # same pledged revenue as debt service and comes off the top: it is netted
-    # from the revenue available to the senior AND the subordinate lien.
-    # Defaults to zero — an operating budget is a district-specific number, not
-    # something to assume.
-    om_expense: float = 0.0            # OM_EXPENSE (base year, $ per year)
-    om_growth_rate: float = 0.03       # OM_GROWTH_RATE (inflates the base)''')
-
-_p("config.py", '''    @property
-    def mill_levy_cap(self) -> float:''',
-   '''    def om_expense_for(self, collection_year: int) -> float:
-        """
-        District operations & maintenance charged against pledged revenue in
-        ``collection_year``.
-
-        Nothing is charged before ``district_cost_start_year`` — the same start
-        the administration and trustee fees use — and from then on the base
-        inflates at ``om_growth_rate``.
-        """
-        if not self.om_expense:
-            return 0.0
-        start = self.district_cost_start_year or (self.delivery.year + 2)
-        if collection_year < start:
-            return 0.0
-        return self.om_expense * (1 + self.om_growth_rate) ** (collection_year - start)
-
-    @property
-    def mill_levy_cap(self) -> float:''')
+#  1. The base ACTUALLY INFLATES.  Colorado's summary.py charges a flat
+#     `om_carveout` and never reads `om_growth_rate`; here the growth rate
+#     applies, which is what ties the model to the reference workbook.
+#  2. Nothing is charged before `district_cost_start_year`.
+#  3. It is netted from the revenue available to BOTH liens.  The subordinate
+#     lien's own revenue is measured as `net_sub_revenue - net_senior_revenue`,
+#     so a cost netted from the senior side alone is handed straight to the sub
+#     — which would make an operating expense *raise* subordinate capacity.
+#     Money the district actually spends is available to neither bond.
 
 _p("summary.py", '''    net_senior_revenue: float      # AX
     net_sub_revenue: float         # BO''',
@@ -1362,44 +1355,16 @@ _p("summary.py", '''    net_senior_revenue: float      # AX
     net_sub_revenue: float         # BO
     om_expense: float = 0.0        # district O&M, netted from both liens''')
 
-_p("summary.py", '''            collection_fee = mill_revenue * cfg.county_collection_fee
-            admin_cost, trustee_fee, trustee_fee_sub = cfg.district_costs(collect)''',
-   '''            collection_fee = mill_revenue * cfg.county_collection_fee
-            admin_cost, trustee_fee, trustee_fee_sub = cfg.district_costs(collect)
-            # District O&M comes off the top — see ModelConfig.om_expense_for.
-            om_expense = cfg.om_expense_for(collect)''')
-
-_p("summary.py", '''            net_senior_revenue = (
-                mill_revenue + uniform_fee - collection_fee - trustee_fee - admin_cost
-            )''',
-   '''            net_senior_revenue = (
-                mill_revenue + uniform_fee - collection_fee - trustee_fee - admin_cost
-                - om_expense
-            )''')
-
-_p("summary.py", '''            net_sub_revenue = mill_revenue + uniform_fee - trustee_fee_sub''',
-   '''            net_sub_revenue = mill_revenue + uniform_fee - trustee_fee_sub - om_expense''')
-
 _p("summary.py", '''                net_sub_revenue=net_sub_revenue,
             )''',
    '''                net_sub_revenue=net_sub_revenue,
                 om_expense=om_expense,
             )''')
 
-_p("inputs.py", '''    ("District Costs", "First Year District Costs Are Charged", "DISTRICT_COST_START_YEAR",''',
-   '''    ("District Costs", "Starting O&M Expense", "OM_EXPENSE", "om_expense", "float", "$ per year of district operations & maintenance, netted from the revenue available to both liens"),
-    ("District Costs", "O&M Expense Growth Rate", "OM_GROWTH_RATE", "om_growth_rate", "pct", "annual inflation on the O&M base"),
-    ("District Costs", "First Year District Costs Are Charged", "DISTRICT_COST_START_YEAR",''')
-
-_p("report.py", '''             ("om", "− District\\nAdmin", 11),
+_p("report.py", '''             ("om", "− District\\nO&M", 11),
              ("net", "Net Revenue\\n(senior sizing)", 15)]''',
-   '''             ("om", "− District\\nAdmin", 11),
-             ("omexp", "− District\\nO&M", 11),
+   '''             ("om", "− District\\nO&M", 11),
              ("net", "Net Revenue\\n(senior sizing)", 15)]''')
-
-_p("report.py", '''            "trust": trust, "subtrust": subtrust, "om": om, "net": r.net_senior_revenue,''',
-   '''            "trust": trust, "subtrust": subtrust, "om": om,
-            "omexp": -r.om_expense, "net": r.net_senior_revenue,''')
 
 
 
@@ -1461,8 +1426,6 @@ _p("report.py", '''    _cell(ws, rw, 6, round(tot_avail, 0) or None, _TOTAL, fon
 
 _p("report.py", '''        ("note", "County collection cost", _pct(cfg.county_collection_fee)),''',
    '''        ("note", "County collection cost", _pct(cfg.county_collection_fee)),
-        ("note", "District administration (base / growth)",
-            f"${cfg.admin_cost:,.0f} / {_pct(cfg.admin_growth_rate)}"),
         ("note", "District O&M expense (base / growth)",
             (f"${cfg.om_expense:,.0f} / {_pct(cfg.om_growth_rate)}"
              if cfg.om_expense else "none entered")),''')

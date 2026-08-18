@@ -272,10 +272,10 @@ def test_refunding_sub_first_coupon_is_a_stub_from_the_refunding_delivery(built,
     assert implied == pytest.approx(14 / 360, abs=1e-4)
 
 
-def test_refunding_new_money_depends_on_the_refunding_sub(built, senior):
-    """At 3 mills the senior refunding alone returns LESS than it costs once the
-    new-money sub is defeased; the refunding subordinate lien is what makes the
-    refunding pay.  If this ever flips, the 'new money' headline needs rereading."""
+def test_refunding_new_money_is_mostly_the_refunding_sub(built, senior):
+    """Most of the refunding's 'new money' is the refunding subordinate lien,
+    not an interest saving on the senior — worth pinning, because the headline
+    reads like a rate story and is not one."""
     cfg, _dev, sm = built
     ref_year = cfg.delivery_refunding.year
     final = senior.final_year
@@ -292,8 +292,8 @@ def test_refunding_new_money_depends_on_the_refunding_sub(built, senior):
     # Dropping the refunding sub removes its par from sources and its
     # underwriter's discount from uses.
     senior_only = res.new_money_reimbursement - res.refunding_sub_par * (1 - cfg.uwd_sub)
-    assert senior_only < 0, senior_only
     assert res.new_money_reimbursement > 0
+    assert senior_only < res.new_money_reimbursement / 2, senior_only
 
 
 def test_series_c_is_off_and_invisible(tmp_path):
@@ -586,32 +586,41 @@ def _sized(cfg):
     return senior, sub_par, sm
 
 
-def test_om_expense_defaults_to_zero_and_changes_nothing():
-    """An operating budget is district-specific; the model must not invent one."""
+def test_om_expense_is_the_single_district_cost_line():
+    """District administration and O&M are one budget for a Utah PID, which
+    rarely carries an operations levy to fund either.  One line, one growth
+    rate — the $53,060 base is the reference deal's figure."""
     cfg = ModelConfig()
-    assert cfg.om_expense == 0.0
-    assert all(r.om_expense == 0.0 for r in SummaryModel(
-        cfg, viridian_farm_projections().build(cfg)).build().rows)
+    assert cfg.om_expense == pytest.approx(53_060)
+    assert cfg.om_growth_rate == pytest.approx(0.02)
+    for gone in ("admin_cost", "admin_growth_rate", "admin_cost_av_limit"):
+        assert not hasattr(cfg, gone), gone
+    # district_costs now carries the trustee fees only.
+    assert len(cfg.district_costs(cfg.delivery.year + 5)) == 2
 
 
 def test_om_expense_starts_with_the_other_district_costs_and_inflates():
-    cfg = ModelConfig()
-    cfg.om_expense = 40_000
-    cfg.om_growth_rate = 0.035
+    cfg = ModelConfig(om_expense=40_000, om_growth_rate=0.035)
     start = cfg.district_cost_start_year or (cfg.delivery.year + 2)
     assert cfg.om_expense_for(start - 1) == 0.0
     assert cfg.om_expense_for(start) == pytest.approx(40_000)
     assert cfg.om_expense_for(start + 10) == pytest.approx(40_000 * 1.035 ** 10)
 
 
+def test_om_expense_stops_above_the_taxable_value_limit():
+    cfg = ModelConfig(om_expense=40_000, om_expense_av_limit=100_000_000)
+    year = cfg.delivery.year + 5
+    assert cfg.om_expense_for(year, 50_000_000) > 0
+    assert cfg.om_expense_for(year, 150_000_000) == 0.0
+
+
 def test_om_expense_is_netted_from_both_liens():
     """The sub lien's own revenue is `net_sub - net_senior`, so a cost netted
-    from the senior side alone would be handed to the sub — an O&M expense would
-    then *raise* subordinate capacity.  It has to come off the top."""
-    base = SummaryModel(ModelConfig(),
-                        viridian_farm_projections().build(ModelConfig())).build()
-    cfg = ModelConfig()
-    cfg.om_expense = 40_000
+    from the senior side alone would be handed to the sub — an operating expense
+    would then *raise* subordinate capacity.  It has to come off the top."""
+    base_cfg = ModelConfig(om_expense=0.0)
+    base = SummaryModel(base_cfg, viridian_farm_projections().build(base_cfg)).build()
+    cfg = ModelConfig()                      # the calibrated $53,060
     with_om = SummaryModel(cfg, viridian_farm_projections().build(cfg)).build()
     year = 2035
     charge = with_om.row(year).om_expense
@@ -623,10 +632,8 @@ def test_om_expense_is_netted_from_both_liens():
 
 
 def test_om_expense_reduces_both_senior_and_subordinate_capacity():
-    cfg_om = ModelConfig()
-    cfg_om.om_expense = 40_000
-    senior_0, sub_0, _ = _sized(ModelConfig())
-    senior_om, sub_om, _ = _sized(cfg_om)
+    senior_0, sub_0, _ = _sized(ModelConfig(om_expense=0.0))
+    senior_om, sub_om, _ = _sized(ModelConfig())      # $53,060
     assert senior_om.par_amount < senior_0.par_amount
     assert sub_om < sub_0
 

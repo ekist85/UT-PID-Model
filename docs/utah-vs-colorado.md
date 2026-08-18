@@ -166,57 +166,53 @@ County", so the input is retained — at 0.00%.
 
 ---
 
-## 8. Operations levy and district administration
+## 8. Operations levy and district O&M
 
 **Colorado.** Metro districts levy a separate operations and maintenance mill
 levy, and the template carves operations out of pledged revenue up to an
-assessed-value limit.
+assessed-value limit — a single "O&M Carveout" row.
 
-**Utah.** The Viridian PID levies for debt service only; ongoing operations sit
-with the HOA or the city. District administration — accounting, audit, legal,
-assessor and continuing-disclosure filings — is a real cost paid from pledged
-revenue, so it is charged against the senior lien.
+**Utah.** The Viridian PID levies for debt service only. Whatever the district
+spends comes out of the same pledged revenue that services the bonds, and it is
+**one budget, on one line**: administration (accounting, audit, legal, assessor
+and continuing-disclosure filings) and operations (landscaping, parks and
+trails, snow removal, street lighting, utilities on the district improvements)
+are not separately funded, because there is no operations levy to fund either.
+`OM_EXPENSE` takes the starting annual figure — $53,060 on the reference deal —
+and `OM_GROWTH_RATE` inflates it.
 
-Two refinements over the Colorado module, both using inputs that already existed
-there: the administration base **inflates** at `admin_growth_rate` (the Colorado
-`summary.py` charges a flat amount and never reads the growth rate), and nothing
-is charged before `district_cost_start_year` — by default two years after
-closing, which is the first roll set with the bonds outstanding and therefore
-the first year with a full year of collections to charge against. Both bring the
-model onto the reference workbook.
+Three refinements over the Colorado module:
 
-**District O&M is a separate, modelled expense.** Because a Utah PID usually has
-no operations levy, whatever the district does spend on operations —
-landscaping, parks and trails, snow removal, street lighting, utilities on the
-district improvements — comes out of the same pledged revenue that services the
-bonds. `OM_EXPENSE` on the Inputs page takes a starting annual budget and
-`OM_GROWTH_RATE` inflates it, on the same start year as the other district
-costs. It defaults to **zero**: an operating budget is a district-specific
-number, and the model should not invent one.
+* **The base inflates.** Colorado's `summary.py` charges a flat `om_carveout`
+  and never reads `om_growth_rate`. Here the growth rate applies, which is what
+  ties the model to the reference workbook.
+* **Nothing is charged before `district_cost_start_year`** — by default two
+  years after closing, the first roll set with the bonds outstanding and
+  therefore the first year with a full year of collections to charge against.
+* **It is netted from the revenue available to both liens.** The subordinate
+  lien's own revenue is measured as `net_sub_revenue - net_senior_revenue`, so a
+  cost netted from the senior side alone is handed straight to the subordinate —
+  an operating expense charged that way would *raise* subordinate capacity.
+  Money the district actually spends is available to neither bond.
 
-It is netted from the revenue available to **both** liens, which is the one
-place this differs mechanically from the administration carveout above. The
-subordinate lien's own revenue is measured as `net_sub_revenue -
-net_senior_revenue`, so a cost netted from the senior side alone is handed
-straight to the subordinate — an O&M expense charged that way would *raise*
-subordinate capacity. Money the district actually spends is available to
-neither bond.
+That third point is the one that moves a number. Charged against the senior lien
+alone (Colorado's treatment), the $53,060 shifts to the subordinate rather than
+leaving the pledge, and the sub sizes to $1,730,000; off the top, it sizes to
+**$1,152,000**. Senior par is identical either way at $5,665,000 — the senior
+side of the charge is unchanged.
 
-That asymmetry is worth noting about the inherited administration line: it is
-netted from the senior side only, so the $53,060 base does move to the
-subordinate lien rather than leaving the pledge. It is calibrated that way
-against the reference workbook and is left alone here, but if the intent is that
-administration also comes off the top, it should move to the same treatment as
-`om_expense`.
+`OM_EXPENSE_AV_LIMIT` stops the charge once total taxable value passes a
+threshold, for a district that expects to fund itself from an operations levy
+once the base is large enough. It defaults to $0, meaning no limit.
 
-The O&M tab now shows revenue, expense and the surplus/(deficit) between them —
+The O&M tab shows revenue, expense and the surplus/(deficit) between them —
 with no operations levy, that deficit is what the debt-service levy is carrying.
 
-*Code:* `ModelConfig.admin_cost`, `ModelConfig.admin_growth_rate`,
-`ModelConfig.district_cost_start_year`, `ModelConfig.district_costs()` (used by
-both `SummaryModel.build` and the report, so the two cannot disagree);
-`ModelConfig.om_expense`, `ModelConfig.om_growth_rate`,
-`ModelConfig.om_expense_for()`, `SummaryRow.om_expense`.
+*Code:* `ModelConfig.om_expense`, `ModelConfig.om_growth_rate`,
+`ModelConfig.om_expense_av_limit`, `ModelConfig.om_expense_for()`,
+`ModelConfig.district_cost_start_year`, `ModelConfig.district_costs()` (trustee
+fees; used by both `SummaryModel.build` and the report, so the two cannot
+disagree), `SummaryRow.om_expense`.
 
 ---
 
@@ -290,7 +286,7 @@ Colorado name names a Colorado mechanism:
 | `tax_collect_so_prc` | `uniform_fee_prc` | uniform fee, not specific ownership tax |
 | `county_treasurer_fee` | `county_collection_fee` | no treasurer haircut in Utah |
 | `oil_gas_*` | `centrally_assessed_*` | § 59-2-201 centrally assessed property |
-| `om_carveout` | `admin_cost` | charged against pledged revenue, not an operations levy |
+| `om_carveout` | `om_expense` | the district's one standing cost — administration and operations alike |
 | `metro_name` | `pid_name` | it is a public infrastructure district |
 | `TABOR_HISTORY` | `RESIDENTIAL_EXEMPTION_HISTORY` | 25% (1982) → 45% (1995) |
 | `VACANT_LAND_HISTORY` | `BUILDER_INVENTORY_HISTORY` | R884-24P-52 treatment |
@@ -332,7 +328,8 @@ retired.
   on bonds dated 5.6 months earlier. The port anchors the accrual to the dated
   date: 2024 accrues nothing, 2025 accrues 0.4694 years (30/360 from 26
   September to 15 March), and every period after that is a full year. Sized sub
-  par moves from $1,701,000 to $1,730,000.
+  par moves materially — worth about $29,000 of subordinate par on the
+  reference deal.
 
 One Colorado change needed a Utah-specific adjustment rather than a straight
 port: `residential_assessment_rate` now falls back to the historical rate table
@@ -358,7 +355,7 @@ Two smaller Utah-specific departures ride alongside:
 
 ---
 
-## 14. The refunding is a subordinate-lien story
+## 14. The refunding is mostly a subordinate-lien story
 
 The refunding now issues its own subordinate cash-flow lien, sized by exactly
 the same method as the new-money sub: a senior surplus / debt-service-reserve
@@ -366,23 +363,21 @@ fund is built against the refunding senior lien and the largest subordinate par
 the residual surplus fully repays is solved by bisection, dated on the refunding
 delivery date.
 
-That matters more in Utah than it does in Colorado. At 3 mills the senior
-refunding alone does not pay: refunding par plus the released reserve and the
-surplus on hand comes to roughly $313,000 *less* than the cost of defeasing both
-liens and covering the transaction costs. Colorado's 50-plus mills leave enough
-headroom that the senior refunding can carry itself; Utah's fixed § 17D-4-303
-cap does not.
+That matters more in Utah than it does in Colorado, because Utah's fixed
+§ 17D-4-303 cap leaves so much less refunding headroom than Colorado's 50-plus
+mills. Of the **$1,715,067** of new money on the reference deal, roughly
+**$1,240,000** is the refunding sub — $1,259,000 of par net of its underwriter's
+discount, sized against the residual surplus that defeasing the $1,152,000
+new-money note hands back. The senior refunding itself contributes about
+**$475,000**.
 
-What turns it positive is the refunding sub. Defeasing the new-money
-subordinate note hands the residual surplus back, and the refunding sub is sized
-against it — $2,091,000 on the reference deal, against $1,730,000 of new-money
-sub retired. Net new money goes from −$312,944 to **+$1,746,691**, and total
-developer reimbursement to **$7,185,635**.
-
-The number to read is therefore not an interest saving. It is the district
-re-levering the same residual surplus at the subordinate rate, on a lien that
-accretes at 8.125% and runs to 2059. Worth stating plainly to anyone who sees
-"$1.05 million of new money" and reads it as refunding savings.
+The number to read is therefore mostly not an interest saving. It is the
+district re-levering the same residual surplus at the subordinate rate, on a
+lien that accretes at 8.125% and runs to 2059. Worth stating plainly to anyone
+who sees "$1.7 million of new money" and reads it as refunding savings. (How
+much of it is senior is sensitive to the O&M charge: a heavier operating budget
+shrinks the new-money sub, shrinks the escrow needed to defease it, and pushes
+the senior share up.)
 
 *Code:* `RefundingAnalysis.run` (sizes it), `RefundingResult.refunding_sub` /
 `.refunding_sub_par`, the **Subordinate Lien – Refunding** tab, and the memo's
@@ -401,10 +396,9 @@ sizes against — sizing depends on the final-maturity inputs alone.
 For Utah that lands the projection at 2064 instead of 2054, and it moves one
 number: the **refunding** used to size against a revenue stream that had
 collapsed to zero after the senior's 2054 maturity. With the full stream, the
-refunding senior par goes $6,925,000 → $7,530,000 and the refunding sub
-$1,997,000 → $2,091,000. First-financing sizing is untouched — senior par
-$5,665,000, sub par $1,730,000, reimbursement $5,438,944 — because those bonds
-mature inside the old horizon either way.
+refunding senior par goes $6,925,000 → $7,530,000. First-financing sizing is
+untouched — senior par $5,665,000, sub par $1,152,000, reimbursement $4,869,614 —
+because those bonds mature inside the old horizon either way.
 
 *Code:* `ModelConfig.projection_years`, `DeveloperProjections.build`
 (`last_year = max(horizon, longest bond maturity)`), and the `PROJECTION_YEARS`

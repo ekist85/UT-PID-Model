@@ -489,8 +489,7 @@ def _build_summary_av_sheet(ws, cfg, dev, sm):
              ("treas", f"− County Collection\n@ {cfg.county_collection_fee:.2%}", 13),
              ("trust", "− Senior\nTrustee", 11),
              ("subtrust", "− Sub\nTrustee", 11),
-             ("om", "− District\nAdmin", 11),
-             ("omexp", "− District\nO&M", 11),
+             ("om", "− District\nO&M", 11),
              ("net", "Net Revenue\n(senior sizing)", 15)]
 
     ws.column_dimensions["A"].width = 10
@@ -530,19 +529,18 @@ def _build_summary_av_sheet(ws, cfg, dev, sm):
         y = r.collection_year
         fill = _GRAY if i % 2 else _WHITE
         treas = -r.mill_revenue * cfg.county_collection_fee
-        # District costs come from the same helper the revenue engine uses,
+        # District costs come from the same helpers the revenue engine uses,
         # so the report and the sizing can never disagree.
-        _admin, _trustee, _subtrustee = cfg.district_costs(r.collection_year)
+        _trustee, _subtrustee = cfg.district_costs(r.collection_year)
         trust = -_trustee
         subtrust = -_subtrustee
-        om = -_admin
+        om = -r.om_expense
         vals = {
             "lotav": r.lot_av, "homeav": r.residential_av, "ogav": r.centrally_assessed_av,
             "commav": r.commercial_av, "stateav": r.state_av, "exempt": -cfg.exempt_value,
             "total": r.total_av, "mill": r.mill_revenue, "uniform_fee": r.uniform_fee_revenue,
             "gross": r.mill_revenue + r.uniform_fee_revenue, "treas": treas,
-            "trust": trust, "subtrust": subtrust, "om": om,
-            "omexp": -r.om_expense, "net": r.net_senior_revenue,
+            "trust": trust, "subtrust": subtrust, "om": om, "net": r.net_senior_revenue,
         }
         _cell(ws, rw, 1, r.collection_year - 1, fill, align=_CENTER)
         _cell(ws, rw, 2, r.collection_year, fill, align=_CENTER)
@@ -1727,8 +1725,6 @@ def _build_notes_sheet(ws, cfg, senior, sub_result=None, refunding_result=None):
         ("note", "Mill-levy collection / specific-ownership tax",
             f"{_pct(cfg.tax_collect_mill_prc)} / {_pct(cfg.uniform_fee_prc)}"),
         ("note", "County collection cost", _pct(cfg.county_collection_fee)),
-        ("note", "District administration (base / growth)",
-            f"${cfg.admin_cost:,.0f} / {_pct(cfg.admin_growth_rate)}"),
         ("note", "District O&M expense (base / growth)",
             (f"${cfg.om_expense:,.0f} / {_pct(cfg.om_growth_rate)}"
              if cfg.om_expense else "none entered")),

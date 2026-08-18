@@ -70,7 +70,7 @@ reserve fund accumulates the senior residual toward a target (½ × max senior
 annual debt service), spills above-target cash to the sub lien, and releases the
 reserve at senior maturity; the subordinate cash-flow bond accrues interest that
 compounds while unpaid, and is repaid interest-first then principal. The one
-Utah change is what feeds it — pledged revenue net of district administration,
+Utah change is what feeds it — pledged revenue net of district O&M,
 which a Utah PID pays out of the debt service levy rather than a separate
 operations levy.
 
@@ -115,7 +115,8 @@ rounding it — was adopted upstream in `ba72e6b`, so the patch is retired):
   September delivery's first sub payment is the following 15 March — upstream
   charges that period a full year of interest on bonds dated less than six
   months earlier. The port anchors the stub to the dated date itself, which
-  moves the sized sub par from $1,701,000 to $1,730,000.
+  moves the sized sub par materially — on the reference deal it is worth about
+  $29,000 of subordinate par.
 
 ## Layout
 
@@ -175,17 +176,24 @@ python -c "import main; main.run_model(inputs_path='my_inputs.xlsx')"
 
 ### District costs on the Inputs page
 
-Four rows under **District Costs** come off pledged revenue before debt service:
+**District O&M is one line, not two.** Administration (accounting, audit, legal,
+assessor, continuing disclosure) and operations (landscaping, parks and trails,
+snow removal, lighting) are the same budget for a Utah PID, which rarely carries
+an operations levy to fund either — so they share a single row:
 
 | Row | Range name | Default |
 |---|---|---:|
-| Annual District Administration | `ADMIN_COST` | $53,060 |
-| District Administration Growth Rate | `ADMIN_GROWTH_RATE` | 2.0% |
-| Starting O&M Expense | `OM_EXPENSE` | $0 |
-| O&M Expense Growth Rate | `OM_GROWTH_RATE` | 3.0% |
+| Starting O&M Expense | `OM_EXPENSE` | $53,060 |
+| O&M Expense Growth Rate | `OM_GROWTH_RATE` | 2.0% |
+| O&M Expense Taxable Value Limit | `OM_EXPENSE_AV_LIMIT` | $0 (no limit) |
+| First Year District Costs Are Charged | `DISTRICT_COST_START_YEAR` | blank ⇒ delivery + 2 |
 
-Both bases start in `DISTRICT_COST_START_YEAR` (blank ⇒ two years after
-closing, the first year with a full year of collections) and inflate from there.
+The base starts in `DISTRICT_COST_START_YEAR` (blank ⇒ two years after closing,
+the first year with a full year of collections) and inflates from there. It is
+netted from the revenue available to the **senior and the subordinate lien** —
+money the district actually spends is available to neither bond — and shows as
+its own **− District O&M** column on Summary - Detail and against operations
+revenue on the **O&M Revenue** tab.
 
 Two more rows worth knowing about: **`PROJECTION_YEARS`** (Tax & Valuation,
 default 40) sets how far the development, taxable-value, revenue and summary
@@ -261,7 +269,7 @@ released debt-service-reserve fund as a balloon.
 | Net pledged revenue, 2028 roll | $375,369 | $375,625 | — |
 | Senior final maturity | 3/1/2054 | 3/1/2054 | 3/1/2054 |
 | DSRF | $475,000 | $545,055 | — |
-| Subordinate par | $1,730,000 (sized) | $1,000,000 (typed) | $1,000,000 |
+| Subordinate par | $1,152,000 (sized) | $1,000,000 (typed) | $1,000,000 |
 
 Taxable value ties **to the dollar** from the 2031 roll onward. Through
 build-out the model runs within 0.2% because lot inventory is carried at the
@@ -286,16 +294,15 @@ fails the suite.
    interest-only years are not tested. The shortfall is met from the debt
    service reserve. Lengthening the capitalized interest period past 36 months
    closes it.
-2. **The refunding only pays because it issues its own subordinate lien.**
-   Senior refunding par plus the released reserve and surplus on hand does *not*
-   cover defeasing both liens and the transaction costs — on its own the senior
-   refunding returns roughly **−$313,000**. Utah's fixed levy caps leave far less
-   refunding headroom than Colorado's 50-plus mills. What turns it positive is
-   the refunding subordinate lien ($2,091,000, sized against the residual surplus
-   the defeased new-money sub gives back), which lifts new money to
-   **+$1,746,691** and total developer reimbursement to **$7,185,635**. That
-   makes the refunding a subordinate-lien story, not a rate story — worth saying
-   out loud before anyone reads the headline number as interest savings.
+2. **Most of the refunding's "new money" is a new subordinate lien, not an
+   interest saving.** Of $1,715,067 of new money, roughly **$1,240,000** is the
+   refunding subordinate lien ($1,259,000 of par, sized against the residual
+   surplus the defeased new-money sub gives back); the senior refunding itself
+   contributes about **$475,000**. Utah's fixed levy caps leave far less
+   refunding headroom than Colorado's 50-plus mills, so the headline is largely
+   the district re-levering the same residual surplus at 8.125% out to 2059 —
+   worth saying out loud before anyone reads it as rate savings. Total developer
+   reimbursement is **$6,584,681** ($4,869,614 first financing + $1,715,067).
 
 ## Tests
 
