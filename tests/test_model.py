@@ -324,6 +324,36 @@ def test_developer_contribution_is_a_source_and_defaults_to_zero():
     assert split["series_c"] == 0.0
 
 
+def test_lot_inventory_follows_deliveries_not_closings():
+    """A lot platted in year y-1 is on the roll set 1 January of year y and is
+    assessed whether or not a home has been built on it.  Upstream keyed the
+    whole tab off home closings, so a builder holding delivered lots showed $0
+    of inventory."""
+    from ut_pid_model.development import ProductLine
+    cfg = ModelConfig()
+    p = ProductLine("Test", 100, {2025: 100}, {2027: 25, 2028: 25, 2029: 25, 2030: 25},
+                    500_000, 2026)
+    dev = DeveloperProjections(products=[p]).build(cfg)
+    rows = {r["av_set"]: r for r in dev.lot_inventory_value_build(cfg)}
+    # 100 lots delivered in 2025 land on the 2026 roll, before any home closes.
+    assert rows[2026]["new_lots"] == pytest.approx(dev.lot_market_value[2025])
+    assert rows[2026]["cumulative"] > 0
+    # They stay in inventory while no homes close, then draw down as they do.
+    assert rows[2027]["cumulative"] == pytest.approx(rows[2026]["cumulative"])
+    for y in (2028, 2029, 2030, 2031):
+        assert rows[y]["cumulative"] < rows[y - 1]["cumulative"]
+    assert rows[2031]["cumulative"] == pytest.approx(0.0, abs=1.0)
+
+
+def test_lot_inventory_cumulative_is_the_inventory_actually_held(built):
+    """The running cumulative telescopes to lots delivered minus homes closed,
+    lagged one year onto the roll — so the tab means what its headers say."""
+    cfg, dev, _sm = built
+    for r in dev.lot_inventory_value_build(cfg):
+        assert r["cumulative"] == pytest.approx(
+            dev.vacant_lot_market_value(r["av_set"] - 1), abs=1.0), r["av_set"]
+
+
 # ── Utah vs Colorado behaviour ────────────────────────────────────────────────
 
 def test_utah_base_dwarfs_the_colorado_base_for_the_same_homes(built):

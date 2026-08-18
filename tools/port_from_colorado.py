@@ -1513,6 +1513,52 @@ _p("report.py", '''            f"Delivered {rd:%B %d, %Y}; callable on and after
 
 
 
+# ── Builder lot inventory is driven by lot DELIVERIES, not home closings ─────
+# Upstream sets the "Value of New Lots" column to l2h(y) — the value of lots
+# CONVERTING TO HOMES in year y — so the whole tab keys off home closings.  A
+# builder can hold 100 delivered lots for two years and the tab reports $0 of
+# inventory, which is wrong on any reading: the lots exist on the 1 January
+# lien date and the county assesses them (§ 59-2-103, § 59-2-303.1).
+#
+# It looks right on the Viridian No. 1 reference deal only by coincidence —
+# closings there equal the prior year's deliveries exactly, so "converted in y"
+# and "delivered in y-1" are the same series.  Any deal where homes lag lots
+# breaks it.
+#
+# The column headers already describe the correct construction: new lots ADD
+# value, lots rolled into homes REMOVE it, the net accumulates.  Feeding the
+# first column the prior year's DELIVERIES makes the arithmetic match the
+# headers, and the cumulative then telescopes exactly to
+# ``vacant_lot_market_value(y - 1)`` — lots delivered but not yet closed, lagged
+# one year onto the roll.  Worth pushing back to co_metro_model.
+_p("development.py", '''        for y in range(first, (max(trued) + 1) if trued else first):
+            net = l2h(y) - l2h(y - 1)''',
+   '''        for y in range(first, (max(trued) + 1) if trued else first):
+            net = self.lot_market_value.get(y - 1, 0.0) - l2h(y - 1)''')
+
+_p("development.py", '''        net_years = [y for y in range(first, horizon_end + 1)
+                     if abs(l2h(y) - l2h(y - 1)) > 1e-6]''',
+   '''        net_years = [y for y in range(first, horizon_end + 1)
+                     if abs(self.lot_market_value.get(y - 1, 0.0) - l2h(y - 1)) > 1e-6]''')
+
+_p("development.py", '''        for y in range(first, horizon_end + 1):
+            new_lots = l2h(y)
+            lots_to_homes = -l2h(y - 1)''',
+   '''        for y in range(first, horizon_end + 1):
+            # Lots delivered in y-1 land on the roll set 1 January of year y.
+            new_lots = self.lot_market_value.get(y - 1, 0.0)
+            lots_to_homes = -l2h(y - 1)''')
+
+_p("development.py", '''        Columns: Value of New Lots (lot value rolling into homes), − Lots to Homes
+        (prior year, the lag), Net Value with Lag, Adjustments (recognition that''',
+   '''        Columns: Value of New Lots (delivered the prior year — a lot platted
+        during year y-1 is on the roll set 1 January of year y), − Lots to Homes
+        (the value leaving inventory as those lots are built out), Net Value with
+        Lag (the change in builder inventory, so the running Cumulative equals
+        ``vacant_lot_market_value(y - 1)``), Adjustments (recognition that''')
+
+
+
 # ── Stale Colorado vocabulary in docstrings / section comments ───────────────
 
 _p("memo.py", '''sources & uses), but states Colorado assumptions — mill levy (governing document cap +

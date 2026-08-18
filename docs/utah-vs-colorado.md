@@ -307,12 +307,27 @@ leaving Colorado behaviour in a Utah model.
 
 ## 13. What rides in the port beyond the renames
 
-Two upstream defects are fixed in the patch set and should go back to
-`co_metro_model`. A third — `SubordinateLien.size_par` rounding the solved par
+Three upstream defects are fixed in the patch set and should go back to
+`co_metro_model`. A fourth — `SubordinateLien.size_par` rounding the solved par
 to the *nearest* $1,000, which can land above the largest par the residual
 cashflow actually retires — was adopted upstream in `ba72e6b`, so that patch is
 retired.
 
+* **The builder lot inventory build keys off home closings.** Upstream sets the
+  "Value of New Lots" column to the value of lots *converting to homes* in that
+  year, and the running cumulative telescopes to the same figure — so the tab
+  reports the conversion flow, not the inventory. A builder that plats 100 lots
+  and sells nothing for two years shows **$0** of builder inventory across those
+  years, when the county assesses those lots on every 1 January lien date in the
+  meantime (§ 59-2-103, § 59-2-303.1). The port feeds the column the prior
+  year's deliveries instead, so the cumulative telescopes to
+  `vacant_lot_market_value(y - 1)` — lots delivered less homes closed, lagged
+  one year onto the roll — which is what the column headers describe.
+
+  It passes unnoticed upstream because the Viridian No. 1 program closes
+  exactly the prior year's deliveries every year, which makes "converted in y"
+  and "delivered in y−1" the same series. Any program where homes lag lots
+  breaks it, and understates the tax base.
 * **`SummaryModel.build` runs past the value builds.** The loop ends at
   `dev.last_year` (2067) while the value builds stop at the senior final
   maturity, so the Summary carries a decade of zero taxable value and fee-only

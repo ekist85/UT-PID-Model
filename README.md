@@ -101,10 +101,19 @@ assessment on the same property is a statutory question this model has not
 worked through, and an untested toggle in a client-facing template is worse than
 no toggle. Turning it on is a one-line change once that authority is settled.
 
-Two upstream fixes ride in the patch set and are worth pushing back to
-`co_metro_model` (a third — flooring the solved subordinate par instead of
+Three upstream fixes ride in the patch set and are worth pushing back to
+`co_metro_model` (a fourth — flooring the solved subordinate par instead of
 rounding it — was adopted upstream in `ba72e6b`, so the patch is retired):
 
+* **The builder lot inventory build keys off home closings, not lot
+  deliveries.** Upstream feeds the "Value of New Lots" column the value of lots
+  *converting to homes* that year, so a builder holding delivered lots shows
+  $0 of inventory until homes start closing. A lot platted during year y−1 is
+  on the roll set 1 January of year y and is assessed whether or not a house
+  stands on it. The port feeds the column the prior year's deliveries, which
+  makes the cumulative telescope to lots delivered less homes closed — the
+  inventory actually held. It looks correct upstream only because the Viridian
+  No. 1 closings equal the prior year's deliveries exactly.
 * `SummaryModel.build` loops collection years to `dev.last_year` (2067) while
   the value builds stop at the senior final maturity, so the Summary tail shows
   a decade of zero taxable value and fee-only negative revenue. The port bounds
@@ -271,7 +280,7 @@ released debt-service-reserve fund as a balloon.
 |---|---:|---:|---:|
 | Senior new-money par | $5,665,000 | $5,690,000 | $5,645,000 |
 | Total taxable value, 2031 roll | $197,316,506 | $197,316,506 | — |
-| Net pledged revenue, 2028 roll | $375,369 | $375,625 | — |
+| Net pledged revenue, 2028 roll | $375,746 | $375,625 | — |
 | Senior final maturity | 3/1/2054 | 3/1/2054 | 3/1/2054 |
 | DSRF | $475,000 | $545,055 | — |
 | Subordinate par | $1,152,000 (sized) | $1,000,000 (typed) | $1,000,000 |

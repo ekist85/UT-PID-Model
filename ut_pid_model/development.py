@@ -211,8 +211,11 @@ class DeveloperProjections:
         """
         Wells Fargo-style lot-inventory value build — one row per AV-set (roll) year.
 
-        Columns: Value of New Lots (lot value rolling into homes), − Lots to Homes
-        (prior year, the lag), Net Value with Lag, Adjustments (recognition that
+        Columns: Value of New Lots (delivered the prior year — a lot platted
+        during year y-1 is on the roll set 1 January of year y), − Lots to Homes
+        (the value leaving inventory as those lots are built out), Net Value with
+        Lag (the change in builder inventory, so the running Cumulative equals
+        ``vacant_lot_market_value(y - 1)``), Adjustments (recognition that
         plugs the running Cumulative up to the trued-up 100% lot value in a cert
         year, then amortized), Cumulative Finished / 100% Lot Value, Assessment
         Ratio, Taxable Value (= 100% lot value × ratio).
@@ -239,7 +242,7 @@ class DeveloperProjections:
         total_recognition = 0.0
         cum = 0.0
         for y in range(first, (max(trued) + 1) if trued else first):
-            net = l2h(y) - l2h(y - 1)
+            net = self.lot_market_value.get(y - 1, 0.0) - l2h(y - 1)
             if y in trued:
                 total_recognition += trued[y] - (cum + net)   # amortized to clear to $0
                 cum = trued[y]
@@ -251,7 +254,7 @@ class DeveloperProjections:
         # past the last non-zero "Net Value with Lag" (the lot-to-home conversion tail).
         lot_delivery_years = [y for y, u in self.lot_deliveries.items() if u]
         net_years = [y for y in range(first, horizon_end + 1)
-                     if abs(l2h(y) - l2h(y - 1)) > 1e-6]
+                     if abs(self.lot_market_value.get(y - 1, 0.0) - l2h(y - 1)) > 1e-6]
         amort_win = (list(range(max(lot_delivery_years) + 1, max(net_years) + 2))
                      if lot_delivery_years and net_years else [])
         per_amort = total_recognition / len(amort_win) if amort_win else 0.0
@@ -259,7 +262,8 @@ class DeveloperProjections:
         first_trued = min(trued) if trued else None
         rows, cum = [], 0.0
         for y in range(first, horizon_end + 1):
-            new_lots = l2h(y)
+            # Lots delivered in y-1 land on the roll set 1 January of year y.
+            new_lots = self.lot_market_value.get(y - 1, 0.0)
             lots_to_homes = -l2h(y - 1)
             net = new_lots + lots_to_homes
             adj = 0.0
