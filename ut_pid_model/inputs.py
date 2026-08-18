@@ -157,7 +157,7 @@ _PCT = '0.000%'           # percentage / rate input cells (3 decimals)
 _DOLLAR = '#,##0'
 _NUM = '#,##0'
 _COVERAGE = '#,##0.000'   # coverage ratios (3 decimals)
-_DATEFMT = 'YYYY-MM-DD'
+_DATEFMT = 'yyyy.m.d'
 
 
 def _fmt_for(kind: str):

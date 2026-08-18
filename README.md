@@ -213,7 +213,12 @@ senior par, $152,000 of subordinate par, and $631,000 of reimbursement.
 Deliverables land in a **`reimbursement analysis`** folder beside the inputs
 workbook:
 
-* `<date> - Reimbursement Analysis - <district> - <N> Lots - Tierra Financial
+Dates read **`yyyy.m.d`** throughout the Excel output — every date-valued cell
+in all three workbooks, the title band on each tab, and the leading date in the
+file names (`2026.8.18 - Reimbursement Analysis - …`). The memo keeps long-form
+prose dates, as a letter should.
+
+* `<yyyy.m.d> - Reimbursement Analysis - <district> - <N> Lots - Tierra Financial
   Advisors.xlsx` — model view. Tabs: **Summary - Light**,
   **Summary - Detail**, **Builder Lot Inventory Value**, **Residential Value**,
   **Development Projections**, Sources & Uses – First, Senior Lien DS – First,

@@ -707,6 +707,50 @@ def test_no_colorado_identifiers_survive_in_the_package():
     assert not offenders, offenders
 
 
+def test_every_excel_date_uses_the_yyyy_m_d_format(deliverables, tmp_path):
+    """Dates read yyyy.m.d everywhere in the Excel output — every date-valued
+    cell in the model workbook, the forecast exhibits and the inputs template."""
+    import datetime
+    import openpyxl
+    from ut_pid_model import write_inputs_workbook
+    out, _r = deliverables
+    paths = [_deliverable(out, _r, WORKBOOK), _deliverable(out, _r, FORECAST),
+             tmp_path / "inputs.xlsx"]
+    write_inputs_workbook(output_path=str(paths[-1]))
+    seen = 0
+    for path in paths:
+        wb = openpyxl.load_workbook(path)
+        for ws in wb.worksheets:
+            for row in ws.iter_rows():
+                for cell in row:
+                    if isinstance(cell.value, (datetime.datetime, datetime.date)):
+                        seen += 1
+                        assert cell.number_format == "yyyy.m.d", (
+                            f"{path.name}:{ws.title}!{cell.coordinate} "
+                            f"= {cell.number_format}")
+    assert seen > 100, seen
+
+
+def test_title_band_and_file_names_carry_the_same_date_format(deliverables):
+    import openpyxl
+    import re
+    out, _r = deliverables
+    path = _deliverable(out, _r, WORKBOOK)
+    assert re.match(r"^\d{4}\.\d{1,2}\.\d{1,2} - ", path.name), path.name
+    wb = openpyxl.load_workbook(path)
+    banded = 0
+    for ws in wb.worksheets:
+        # Development Projections and Notes carry their own district-first
+        # header rather than the standard title band (as in Colorado).
+        if not str(ws.cell(row=2, column=1).value or "").startswith(
+                "Reimbursement Analysis"):
+            continue
+        banded += 1
+        assert re.fullmatch(r"\d{4}\.\d{1,2}\.\d{1,2}",
+                            str(ws.cell(row=1, column=1).value)), ws.title
+    assert banded >= 14, banded
+
+
 def test_inputs_workbook_round_trips(tmp_path):
     from ut_pid_model import load_inputs_workbook, write_inputs_workbook
     path = write_inputs_workbook(

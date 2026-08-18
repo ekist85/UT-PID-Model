@@ -130,6 +130,13 @@ LABEL_SUBS = [
     ("OM_CARVEOUT_AV_LIMIT", "OM_EXPENSE_AV_LIMIT"),
     ("OM_CARVEOUT", "OM_EXPENSE"),
     ("STRICT_BIENNIAL_AV", "HOLD_VALUE_FLAT"),
+    # Excel date format — yyyy.m.d throughout the workbook (number formats and
+    # the one place the format string is compared for alignment).
+    ('fmt="MM/DD/YYYY"', 'fmt="yyyy.m.d"'),
+    ("DATEFMT = 'mm/dd/yyyy'", "DATEFMT = 'yyyy.m.d'"),
+    ("fmt == 'mm/dd/yyyy'", "fmt == 'yyyy.m.d'"),
+    ("_DATEFMT = 'YYYY-MM-DD'", "_DATEFMT = 'yyyy.m.d'"),          # inputs template
+    ('p.payment_date, "DD-MMM-YY"', 'p.payment_date, "yyyy.m.d"'),  # forecast exhibits
     ("Schedule of Estimated Assessed Valuation", "Schedule of Estimated Taxable Value"),
     ("Summary of Assessed Values and Net Tax Revenues",
      "Summary of Taxable Values and Net Tax Revenues"),
@@ -1468,6 +1475,41 @@ _p("inputs.py", '''    ("Developer Contribution", "Applied To (Senior / Subordin
 
 _p("inputs.py", '''        type="list", formula1='"Senior,Subordinate,Series C,Proportional"',''',
    '''        type="list", formula1='"Senior,Subordinate,Proportional"',''')
+
+
+
+# ── Dates read yyyy.m.d across the Excel output ──────────────────────────────
+# The number formats are handled in the label pass; these are the dates rendered
+# as text — the title band on every tab (and, through deliverable_basename, the
+# file names) and the prose subtitles on the CAPI and Call Schedule sheets.
+_p("report.py", '''def _today_str() -> str:
+    from datetime import date as _dt
+    _t = _dt.today()
+    return f"{_t.strftime('%B')} {_t.day}, {_t.year}"''',
+   '''def _today_str() -> str:
+    from datetime import date as _dt
+    return _d(_dt.today())
+
+
+def _d(d) -> str:
+    """A date as yyyy.m.d — the workbook's date format, unpadded."""
+    return f"{d.year}.{d.month}.{d.day}"
+
+
+def _ym(d) -> str:
+    """A month as yyyy.m."""
+    return f"{d.year}.{d.month}"''')
+
+_p("report.py", '''                f"{cfg.capi_end_date:%b %Y}; balance earns {cfg.interest_earn_rate:.2%}/yr"], 6)''',
+   '''                f"{_ym(cfg.capi_end_date)}; balance earns {cfg.interest_earn_rate:.2%}/yr"], 6)''')
+
+_p("report.py", '''        f"Delivered {cfg.delivery:%B %d, %Y}; callable on and after "
+        f"{cfg.premium_call_date:%B %d, %Y} at par plus accrued interest and a premium of:",''',
+   '''        f"Delivered {_d(cfg.delivery)}; callable on and after "
+        f"{_d(cfg.premium_call_date)} at par plus accrued interest and a premium of:",''')
+
+_p("report.py", '''            f"Delivered {rd:%B %d, %Y}; callable on and after {ref_par:%B %d, %Y} "''',
+   '''            f"Delivered {_d(rd)}; callable on and after {_d(ref_par)} "''')
 
 
 

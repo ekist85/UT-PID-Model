@@ -261,7 +261,7 @@ def _build_a5(ws, cfg, senior, prefix="A", scenario_label=""):
         fill = _GRAY if (r - hr) % 2 == 0 else _WHITE
         if p.principal:
             bal -= p.principal
-        _w(ws, r, 1, p.payment_date, "DD-MMM-YY", font=_BODY, align=_C, fill=fill)
+        _w(ws, r, 1, p.payment_date, "yyyy.m.d", font=_BODY, align=_C, fill=fill)
         _w(ws, r, 2, senior.rate if p.payment_date.month == senior.prin_month else None, _PCT2, fill=fill)
         _w(ws, r, 3, round(p.principal) or None, _DOLLAR, fill=fill)
         _w(ws, r, 4, round(p.interest) or None, _DOLLAR, fill=fill)

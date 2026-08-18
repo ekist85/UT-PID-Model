@@ -203,8 +203,17 @@ def _county_line(cfg, suffix: str = "") -> str:
 
 def _today_str() -> str:
     from datetime import date as _dt
-    _t = _dt.today()
-    return f"{_t.strftime('%B')} {_t.day}, {_t.year}"
+    return _d(_dt.today())
+
+
+def _d(d) -> str:
+    """A date as yyyy.m.d — the workbook's date format, unpadded."""
+    return f"{d.year}.{d.month}.{d.day}"
+
+
+def _ym(d) -> str:
+    """A month as yyyy.m."""
+    return f"{d.year}.{d.month}"
 
 
 def _brand_line(cfg, lots=None) -> str:
@@ -606,7 +615,7 @@ def _build_ds_sheet(ws, cfg, tranche, title, sm=None, target_coverage=None):
             cc.fill = fill
             cc.border = _BORDER
 
-        _cell(ws, rw, 1, p.payment_date, fill, fmt="MM/DD/YYYY", align=_LEFT)
+        _cell(ws, rw, 1, p.payment_date, fill, fmt="yyyy.m.d", align=_LEFT)
         # Rate / Yield / Price / Premium-OID booked on coupon (December) rows.
         if is_prin_row:
             _cell(ws, rw, 2, tranche.coupon_for(yr), fill, fmt=_PCT)
@@ -813,7 +822,7 @@ def _build_su_first_sheet(ws, cfg, senior, sub_result, surplus_fund=None, dev=No
 
     # ── Key assumptions ──────────────────────────────────────────────────────
     section(r, "Key Assumptions:"); r += 2
-    DATEFMT = 'mm/dd/yyyy'
+    DATEFMT = 'yyyy.m.d'
     def drow(r, label, sv, bv=None, tv=None, cv=None, fmt=_DOLLAR):
         _cell(ws, r, LBL, label, _WHITE, _BODY, align=_LEFT)
         # A district-wide value (only the Total given) is shown once, beside the
@@ -939,7 +948,7 @@ def _build_su_refunding_sheet(ws, cfg, refunding_result, dev=None):
         if v is None:                           # not applicable — leave cleanly blank
             return
         _cell(ws, r, AMT, v, _WHITE, _BODY, fmt=fmt,
-              align=(_CENTER if fmt == 'mm/dd/yyyy' else _RIGHT))
+              align=(_CENTER if fmt == 'yyyy.m.d' else _RIGHT))
 
     # Sources and Uses
     section(7, "Sources and Uses"); r = 9
@@ -974,7 +983,7 @@ def _build_su_refunding_sheet(ws, cfg, refunding_result, dev=None):
     par_call = rb.call_provisions.par_call_date if rb.call_provisions else None
 
     section(r, "Key Assumptions:"); r += 2
-    DATEFMT = 'mm/dd/yyyy'
+    DATEFMT = 'yyyy.m.d'
     drow(r, "Delivery Date", rb.delivery, fmt=DATEFMT); r += 1
     drow(r, "First Interest Date", first_int, fmt=DATEFMT); r += 1
     drow(r, "First Maturity Date", first_mat, fmt=DATEFMT); r += 1
@@ -1020,7 +1029,7 @@ def _build_capi_fund_sheet(ws, cfg, senior):
     deposit = sum(p.capitalized_interest for p in senior.schedule)
     _title(ws, cfg, [cfg.pid_name, "Capitalized Interest (CAPI) Fund — Senior Lien",
                 f"${deposit:,.0f} funds ~{cfg.capi_term} months of interest through "
-                f"{cfg.capi_end_date:%b %Y}; balance earns {cfg.interest_earn_rate:.2%}/yr"], 6)
+                f"{_ym(cfg.capi_end_date)}; balance earns {cfg.interest_earn_rate:.2%}/yr"], 6)
     for c, lbl, w in [(1, "Date", 13), (2, "Beginning\nBalance", 16),
                       (3, "Periodic\nRate", 11), (4, "Interest\nEarned", 14),
                       (5, "Interest\nFunded (Draw)", 16), (6, "Ending\nBalance", 16)]:
@@ -1034,7 +1043,7 @@ def _build_capi_fund_sheet(ws, cfg, senior):
     monthly_rate = cfg.interest_earn_rate / 12.0
 
     # Opening deposit row (delivery date).
-    _cell(ws, 6, 1, senior.delivery, _WHITE, fmt="MM/DD/YYYY", align=_LEFT)
+    _cell(ws, 6, 1, senior.delivery, _WHITE, fmt="yyyy.m.d", align=_LEFT)
     _cell(ws, 6, 2, round(deposit), _WHITE, fmt=_DOLLAR)
     for c in (3, 4, 5):
         ws.cell(row=6, column=c).fill = _WHITE
@@ -1054,7 +1063,7 @@ def _build_capi_fund_sheet(ws, cfg, senior):
         draw = draws.get((cur.year, cur.month), 0.0)
         bal = max(beg + earned - draw, 0.0)
         tot_earned += earned
-        _cell(ws, rw, 1, cur, fill, fmt="MM/DD/YYYY", align=_LEFT)
+        _cell(ws, rw, 1, cur, fill, fmt="yyyy.m.d", align=_LEFT)
         _cell(ws, rw, 2, round(beg), fill, fmt=_DOLLAR)
         _cell(ws, rw, 3, monthly_rate, fill, fmt='0.0000%')
         _cell(ws, rw, 4, round(earned) or None, fill, fmt=_DOLLAR)
@@ -1156,7 +1165,7 @@ def _build_sub_sheet(ws, cfg, sub_result, series_label=""):
         for c in range(1, NC + 1):
             cc = ws.cell(row=rw, column=c); cc.fill = fill; cc.border = _BORDER
         _cell(ws, rw, 1, _date(y, cfg.prin_maturity, cfg.prin_maturity_day_sub),
-              fill, fmt="MM/DD/YYYY", align=_LEFT)
+              fill, fmt="yyyy.m.d", align=_LEFT)
         if i == 0:                          # single accreting rate, sold at par
             _cell(ws, rw, 2, sub_result.rate, fill, fmt=_PCT)
             _cell(ws, rw, 3, sub_result.rate, fill, fmt=_PCT)
@@ -1245,7 +1254,7 @@ def _build_series_c_sheet(ws, cfg, series_c):
         for c in range(1, NC + 1):
             cc = ws.cell(row=rw, column=c); cc.fill = fill; cc.border = _BORDER
         _cell(ws, rw, 1, _date(y, cfg.prin_maturity, cfg.prin_maturity_day_sub),
-              fill, fmt="MM/DD/YYYY", align=_LEFT)
+              fill, fmt="yyyy.m.d", align=_LEFT)
         if i == 0:
             _cell(ws, rw, 2, series_c.rate, fill, fmt=_PCT)
             _cell(ws, rw, 3, series_c.rate, fill, fmt=_PCT)
@@ -1283,7 +1292,7 @@ def _build_series_c_sheet(ws, cfg, series_c):
     sc_gross = [(_date(rr["year"], pm, pd), rr["total_paid"])
                 for rr in series_c.rows if rr["total_paid"]]
     uwd = cfg.uwd_sub * series_c.par_amount
-    DATEFMT = 'mm/dd/yyyy'
+    DATEFMT = 'yyyy.m.d'
     stats = [
         ("Par Amount", series_c.par_amount, _DOLLAR),
         ("Coupon (accreting)", series_c.rate, '0.000%'),
@@ -1682,15 +1691,15 @@ def _build_call_schedule_sheet(ws, cfg, refunding_result=None):
 
     r = _table(
         5, "SENIOR LIEN BONDS (New Money)",
-        f"Delivered {cfg.delivery:%B %d, %Y}; callable on and after "
-        f"{cfg.premium_call_date:%B %d, %Y} at par plus accrued interest and a premium of:",
+        f"Delivered {_d(cfg.delivery)}; callable on and after "
+        f"{_d(cfg.premium_call_date)} at par plus accrued interest and a premium of:",
         cfg.premium_call_date)
     if refunding_result is not None:
         rd = cfg.delivery_refunding
         ref_par = _edate(rd, 12 * cfg.premium_call_years)
         r = _table(
             r, "REFUNDING BONDS",
-            f"Delivered {rd:%B %d, %Y}; callable on and after {ref_par:%B %d, %Y} "
+            f"Delivered {_d(rd)}; callable on and after {_d(ref_par)} "
             f"at par plus accrued interest (no redemption premium):",
             ref_par, par_only=True)
     ws.freeze_panes = "A5"
