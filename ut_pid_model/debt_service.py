@@ -103,6 +103,26 @@ class PaymentRow:
         return self.gross_total - self.capitalized_interest - self.dsrf_earnings - self.surplus_release
 
 
+def coupon_at(coupon_scale, term_bonds, rate: float, year: int) -> float:
+    """
+    Coupon for a maturity, independent of any tranche — the sizer needs this
+    before a tranche exists, and it must agree with ``BondTranche.coupon_for``.
+
+    A term bond carries a single coupon, entered on its FINAL maturity row, so a
+    year inside a term looks that row up instead of carrying forward from
+    whatever precedes it.
+    """
+    if not coupon_scale:
+        return rate
+    from .config import _schedule_lookup
+    lookup_year = year
+    for first, last, _ty in (term_bonds or []):
+        if first <= year <= last:
+            lookup_year = last
+            break
+    return _schedule_lookup(coupon_scale, lookup_year, rate)
+
+
 @dataclass
 class BondTranche:
     """A sized serial revenue bond (senior new-money or refunding)."""
@@ -134,12 +154,7 @@ class BondTranche:
         installment inside a term looks that row up rather than carrying forward
         from whatever precedes it.
         """
-        if self.coupon_scale:
-            from .config import _schedule_lookup
-            term = self._term_for(year)
-            lookup_year = term[1] if term is not None else year
-            return _schedule_lookup(self.coupon_scale, lookup_year, self.rate)
-        return self.rate
+        return coupon_at(self.coupon_scale, self.term_bonds, self.rate, year)
 
     # ── Pricing (price / yield / premium-OID, priced to worst call) ──────────
     def _term_for(self, year: int):
@@ -293,8 +308,9 @@ class SeniorLienSizer:
 
         principal_years = list(range(first_principal_year, final_year + 1))
 
-        def size_for_par(par: float) -> dict[int, float]:
-            """Apply the wrap formula for an assumed par; returns the principal schedule."""
+        def _wrap(par: float, interest_of) -> dict[int, float]:
+            """The wrap formula for an assumed par, charging ``interest_of(year,
+            balance)`` as that year's interest; returns the principal schedule."""
             principals: dict[int, float] = {}
             balance = par
             for y in principal_years:
@@ -308,12 +324,66 @@ class SeniorLienSizer:
                 # target directly rather than grossing them up by coverage.  This
                 # keeps the resulting net-DS coverage exactly at the target.
                 target = net_rev / coverage + dsrf_earn
-                avail = target - balance * rate
+                avail = target - interest_of(y, balance)
                 if release_surplus and y == final_year:
                     avail += dsrf_deposit  # released DSRF pays down the final maturity
                 p = max(0.0, math.floor(avail / 5000.0) * 5000.0)
                 principals[y] = p
                 balance -= p
+            return principals
+
+        def size_for_par(par: float) -> dict[int, float]:
+            """
+            Principal schedule for an assumed par.
+
+            With no coupon scale every maturity pays the flat rate and the wrap
+            is a single pass.  With a scale the interest in a year is
+            ``sum(P_m * coupon_m)`` over the maturities still outstanding, which
+            depends on principal the pass has not allocated yet — so iterate to a
+            fixed point from the flat-rate schedule.
+            """
+            flat = _wrap(par, lambda y, balance: balance * rate)
+            if not coupon_scale:
+                return flat
+
+            def scaled_interest(principals):
+                """
+                Charge the running balance at the weighted-average coupon of the
+                maturities still outstanding.
+
+                Weighting the BALANCE (rather than summing P_m * coupon_m
+                directly) keeps the flat case exact: when every coupon equals the
+                flat rate the average is that rate and this reduces to
+                ``balance * rate``, so entering a scale equal to the Inputs rate
+                does not move the par.  Summing the schedule directly would
+                charge interest on the schedule's total rather than on the par
+                being tested, which differ by the rounding residual while the
+                outer bisection is still searching.
+                """
+                def of(y, balance):
+                    num = den = 0.0
+                    for m, P in principals.items():
+                        if m >= y:
+                            num += P * coupon_at(coupon_scale, term_bonds, rate, m)
+                            den += P
+                    return balance * (num / den if den else rate)
+                return of
+
+            principals, history = flat, []
+            for _ in range(50):
+                if principals in history:
+                    # The $5,000 rounding can leave the iteration in a short
+                    # cycle rather than at an exact fixed point.  Take the
+                    # SMALLEST schedule in the cycle: under-sizing by a rounding
+                    # step leaves coverage at or above target, over-sizing pushes
+                    # it below — which is the defect this whole change fixes.
+                    cycle = history[history.index(principals):]
+                    return min(cycle, key=lambda s: sum(s.values()))
+                history.append(principals)
+                nxt = _wrap(par, scaled_interest(principals))
+                if nxt == principals:
+                    return principals
+                principals = nxt
             return principals
 
         if par_schedule:

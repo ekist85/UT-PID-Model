@@ -112,10 +112,18 @@ assessment on the same property is a statutory question this model has not
 worked through, and an untested toggle in a client-facing template is worse than
 no toggle. Turning it on is a one-line change once that authority is settled.
 
-Four upstream fixes ride in the patch set and are worth pushing back to
-`co_metro_model` (a fifth — flooring the solved subordinate par instead of
+Five upstream fixes ride in the patch set and are worth pushing back to
+`co_metro_model` (a sixth — flooring the solved subordinate par instead of
 rounding it — was adopted upstream in `ba72e6b`, so the patch is retired):
 
+* **The revenue wrap sizes at the flat rate, not the entered coupons.**
+  `size_for_par` charges `balance * rate` while `_apply_coupon_scale` afterwards
+  restates the real interest at the per-maturity coupons, so a deal is sized as
+  though it pays the Inputs-page rate and then actually pays the entered one.
+  Entering a 6.250% scale against a 5.875% Inputs rate dropped achieved coverage
+  to 1.29x against a 1.30x target (minimum 0.76x against 0.82x). The port
+  charges the wrap the weighted-average coupon of the maturities still
+  outstanding, solved as a fixed point from the flat-rate schedule.
 * **Pricing uses the flat sizing rate as the coupon.** `BondTranche.price_for`
   passes `self.rate` — the Inputs-page rate the structure is *sized* with — to
   the pricing engine, so the Coupon column on the Debt Structure tab never
@@ -215,9 +223,20 @@ Yield | Type (Serial/Term)** — for the senior bonds and again for the refundin
   `Term`. Everything up to that maturity amortizes into it at that coupon and
   yield. A single Term row therefore makes the whole structure one amortizing
   term bond. Consecutive Term rows define successive terms.
+* One filled Coupon row sets the coupon for **every** maturity (the lookup
+  carries to the nearest entered row), and a Coupon with no Yield prices off the
+  Inputs rate — fill Yield alongside Coupon.
 * **Par Amount** is optional and overrides the revenue-wrap amortization with a
   manual principal schedule. Leave it blank to let the model size the
   amortization; fill it to dictate one.
+
+The coupons you enter drive the sizing as well as the interest and the price:
+the revenue wrap charges the weighted-average coupon of the maturities still
+outstanding, so the deal is sized against the debt service it will actually pay
+and lands on your coverage target. **With the sheet filled, the Inputs-page
+senior interest rate no longer affects the par** — it is only the fallback for a
+blank sheet. On the reference deal a 6.250% scale sizes to $5,430,000 whether
+the Inputs rate says 4.000% or 8.000%, against $5,665,000 blank at 5.875%.
 
 Prices run through the existing price-to-worst engine, so a yield above the
 coupon prices at a discount — a single `2054 · 6.00% · 6.36% · Term` row on the

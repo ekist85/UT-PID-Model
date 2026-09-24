@@ -1637,6 +1637,175 @@ _p("debt_service.py", '''            maturity = date(last, self.prin_month, self
 
 
 
+# ── The revenue wrap sizes at the entered coupons ────────────────────────────
+# `size_for_par` charged interest as `balance * rate` — the flat Inputs-page rate
+# the deal is SIZED with — while `_apply_coupon_scale` afterwards restated the
+# actual interest at the per-maturity coupons.  Enter a 6.250% scale against a
+# 5.875% Inputs rate and the deal is sized as though it pays 5.875% but really
+# pays 6.250%, so achieved coverage lands under target (1.29x against a 1.30x
+# target on the reference deal, minimum 0.76x against 0.82x).
+#
+# Charge the wrap the same interest the bonds will actually pay: in year y,
+# sum(P_m * coupon_m) over the maturities still outstanding.  That is circular —
+# the interest depends on principal not yet allocated — so solve it as a fixed
+# point, seeded with the flat-rate schedule.  An error of e in the future
+# principal moves interest by coupon * e, so the map contracts by roughly the
+# coupon (~0.06) each pass and settles in a handful of iterations; the $5,000
+# rounding means it either lands exactly or wobbles one step, so the loop is
+# capped.  Worth pushing back to co_metro_model.
+_p("debt_service.py", '''    def coupon_for(self, year: int) -> float:
+        """
+        Coupon for a maturity — the per-maturity scale (carry-forward) or the
+        flat rate.
+
+        A term bond carries one coupon, entered on its FINAL maturity row, so an
+        installment inside a term looks that row up rather than carrying forward
+        from whatever precedes it.
+        """
+        if self.coupon_scale:
+            from .config import _schedule_lookup
+            term = self._term_for(year)
+            lookup_year = term[1] if term is not None else year
+            return _schedule_lookup(self.coupon_scale, lookup_year, self.rate)
+        return self.rate''',
+   '''    def coupon_for(self, year: int) -> float:
+        """
+        Coupon for a maturity — the per-maturity scale (carry-forward) or the
+        flat rate.
+
+        A term bond carries one coupon, entered on its FINAL maturity row, so an
+        installment inside a term looks that row up rather than carrying forward
+        from whatever precedes it.
+        """
+        return coupon_at(self.coupon_scale, self.term_bonds, self.rate, year)''')
+
+_p("debt_service.py", '''@dataclass
+class BondTranche:''',
+   '''def coupon_at(coupon_scale, term_bonds, rate: float, year: int) -> float:
+    """
+    Coupon for a maturity, independent of any tranche — the sizer needs this
+    before a tranche exists, and it must agree with ``BondTranche.coupon_for``.
+
+    A term bond carries a single coupon, entered on its FINAL maturity row, so a
+    year inside a term looks that row up instead of carrying forward from
+    whatever precedes it.
+    """
+    if not coupon_scale:
+        return rate
+    from .config import _schedule_lookup
+    lookup_year = year
+    for first, last, _ty in (term_bonds or []):
+        if first <= year <= last:
+            lookup_year = last
+            break
+    return _schedule_lookup(coupon_scale, lookup_year, rate)
+
+
+@dataclass
+class BondTranche:''')
+
+_p("debt_service.py", '''        def size_for_par(par: float) -> dict[int, float]:
+            """Apply the wrap formula for an assumed par; returns the principal schedule."""
+            principals: dict[int, float] = {}
+            balance = par
+            for y in principal_years:
+                if capi_end_year is not None and y <= capi_end_year:
+                    # Interest capitalized — no principal sized during the CAPI period.
+                    principals[y] = 0.0
+                    continue
+                net_rev = self.sm.net_senior_revenue(y)
+                # DSRF interest earnings offset debt service dollar-for-dollar
+                # (net_total already subtracts them), so credit them to the DS
+                # target directly rather than grossing them up by coverage.  This
+                # keeps the resulting net-DS coverage exactly at the target.
+                target = net_rev / coverage + dsrf_earn
+                avail = target - balance * rate
+                if release_surplus and y == final_year:
+                    avail += dsrf_deposit  # released DSRF pays down the final maturity
+                p = max(0.0, math.floor(avail / 5000.0) * 5000.0)
+                principals[y] = p
+                balance -= p
+            return principals''',
+   '''        def _wrap(par: float, interest_of) -> dict[int, float]:
+            """The wrap formula for an assumed par, charging ``interest_of(year,
+            balance)`` as that year's interest; returns the principal schedule."""
+            principals: dict[int, float] = {}
+            balance = par
+            for y in principal_years:
+                if capi_end_year is not None and y <= capi_end_year:
+                    # Interest capitalized — no principal sized during the CAPI period.
+                    principals[y] = 0.0
+                    continue
+                net_rev = self.sm.net_senior_revenue(y)
+                # DSRF interest earnings offset debt service dollar-for-dollar
+                # (net_total already subtracts them), so credit them to the DS
+                # target directly rather than grossing them up by coverage.  This
+                # keeps the resulting net-DS coverage exactly at the target.
+                target = net_rev / coverage + dsrf_earn
+                avail = target - interest_of(y, balance)
+                if release_surplus and y == final_year:
+                    avail += dsrf_deposit  # released DSRF pays down the final maturity
+                p = max(0.0, math.floor(avail / 5000.0) * 5000.0)
+                principals[y] = p
+                balance -= p
+            return principals
+
+        def size_for_par(par: float) -> dict[int, float]:
+            """
+            Principal schedule for an assumed par.
+
+            With no coupon scale every maturity pays the flat rate and the wrap
+            is a single pass.  With a scale the interest in a year is
+            ``sum(P_m * coupon_m)`` over the maturities still outstanding, which
+            depends on principal the pass has not allocated yet — so iterate to a
+            fixed point from the flat-rate schedule.
+            """
+            flat = _wrap(par, lambda y, balance: balance * rate)
+            if not coupon_scale:
+                return flat
+
+            def scaled_interest(principals):
+                """
+                Charge the running balance at the weighted-average coupon of the
+                maturities still outstanding.
+
+                Weighting the BALANCE (rather than summing P_m * coupon_m
+                directly) keeps the flat case exact: when every coupon equals the
+                flat rate the average is that rate and this reduces to
+                ``balance * rate``, so entering a scale equal to the Inputs rate
+                does not move the par.  Summing the schedule directly would
+                charge interest on the schedule's total rather than on the par
+                being tested, which differ by the rounding residual while the
+                outer bisection is still searching.
+                """
+                def of(y, balance):
+                    num = den = 0.0
+                    for m, P in principals.items():
+                        if m >= y:
+                            num += P * coupon_at(coupon_scale, term_bonds, rate, m)
+                            den += P
+                    return balance * (num / den if den else rate)
+                return of
+
+            principals, history = flat, []
+            for _ in range(50):
+                if principals in history:
+                    # The $5,000 rounding can leave the iteration in a short
+                    # cycle rather than at an exact fixed point.  Take the
+                    # SMALLEST schedule in the cycle: under-sizing by a rounding
+                    # step leaves coverage at or above target, over-sizing pushes
+                    # it below — which is the defect this whole change fixes.
+                    cycle = history[history.index(principals):]
+                    return min(cycle, key=lambda s: sum(s.values()))
+                history.append(principals)
+                nxt = _wrap(par, scaled_interest(principals))
+                if nxt == principals:
+                    return principals
+                principals = nxt
+            return principals''')
+
+
+
 # ── Stale Colorado vocabulary in docstrings / section comments ───────────────
 
 _p("memo.py", '''sources & uses), but states Colorado assumptions — mill levy (governing document cap +

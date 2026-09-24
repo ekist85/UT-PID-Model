@@ -29,7 +29,7 @@ from ut_pid_model import (CallProvisions, DeveloperProjections, ModelConfig,
                           RefundingAnalysis, SeniorLienSizer, SubordinateLien,
                           SummaryModel, SurplusFund, build_scenarios,
                           first_financing_sources_uses, lot_inventory_ratio,
-                          residential_taxable_ratio_for,
+                          residential_taxable_ratio_for, senior_coverage_dataframe,
                           size_senior_with_dynamic_dsrf, viridian_farm_projections)
 
 # ── Reference workbook, Summary!AG — total taxable value by ASSESSMENT year.
@@ -779,6 +779,57 @@ def test_title_band_and_file_names_carry_the_same_date_format(deliverables):
         assert re.fullmatch(r"\d{4}\.\d{1,2}\.\d{1,2}",
                             str(ws.cell(row=1, column=1).value)), ws.title
     assert banded >= 14, banded
+
+
+# ── The revenue wrap sizes at the entered coupons ────────────────────────────
+
+def _sized_at(coupon, inputs_rate=None, built=None):
+    """Size the senior lien with a single Term row at `coupon`, off `inputs_rate`."""
+    cfg = ModelConfig()
+    if inputs_rate is not None:
+        cfg.senior_interest_rate = inputs_rate
+    dev = viridian_farm_projections().build(cfg)
+    sm = SummaryModel(cfg, dev).build()
+    kw = dict(name="Senior", rate=cfg.senior_interest_rate, coverage=cfg.dsc_senior,
+              delivery=cfg.delivery,
+              first_principal_year=cfg.senior_first_principal_year,
+              final_year=cfg.senior_final_year, capi_end_year=cfg.capi_end_date.year,
+              call_provisions=CallProvisions(cfg.premium_call_date, cfg.par_call_date,
+                                             cfg.premium_call_price))
+    if coupon is not None:
+        kw["coupon_scale"] = {cfg.senior_final_year: coupon}
+        kw["term_bonds"] = [(cfg.senior_first_principal_year, cfg.senior_final_year, coupon)]
+    senior = size_senior_with_dynamic_dsrf(SeniorLienSizer(cfg, sm), **kw)
+    return cfg, sm, senior
+
+
+def test_wrap_at_entered_coupon_is_exact_when_it_equals_the_flat_rate():
+    """Entering a scale equal to the Inputs rate must not move the par — the
+    weighted-average coupon reduces to the flat rate exactly."""
+    _c1, _s1, blank = _sized_at(None)
+    cfg, _s2, scaled = _sized_at(ModelConfig().senior_interest_rate)
+    assert scaled.par_amount == blank.par_amount
+
+
+def test_wrap_ignores_the_inputs_rate_once_coupons_are_entered():
+    """The Debt Structure coupon drives sizing; the Inputs rate is only the
+    fallback for a blank sheet."""
+    pars = {r: _sized_at(0.0625, inputs_rate=r)[2].par_amount
+            for r in (0.04, 0.05, 0.05875, 0.0625, 0.08)}
+    assert len(set(pars.values())) == 1, pars
+
+
+def test_wrap_at_entered_coupon_holds_the_coverage_target():
+    """Sized at 5.875% but paying 6.250%, the deal used to land under target."""
+    cfg, sm, senior = _sized_at(0.0625, inputs_rate=0.05875)
+    cov = senior_coverage_dataframe(cfg, sm, senior)
+    assert cov["coverage"].iloc[-1] >= cfg.dsc_senior
+
+
+def test_a_higher_coupon_supports_less_par():
+    pars = [_sized_at(c, inputs_rate=0.05875)[2].par_amount
+            for c in (0.05, 0.05875, 0.0625, 0.07)]
+    assert pars == sorted(pars, reverse=True), pars
 
 
 # ── Bond pricing ─────────────────────────────────────────────────────────────
