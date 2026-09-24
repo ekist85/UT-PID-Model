@@ -43,6 +43,27 @@ class SourcesUses:
         return abs(self.total_sources - self.total_uses) < 1.0
 
 
+def allocate_by_par(amount: float, senior_par: float, sub_par: float,
+                    series_c_par: float = 0.0) -> dict:
+    """
+    Split ``amount`` across the series in proportion to par.
+
+    Returns ``{"senior", "subordinate", "series_c"}`` dollar amounts.  With
+    nothing but a senior lien the whole amount comes back to it.
+    """
+    out = {"senior": 0.0, "subordinate": 0.0, "series_c": 0.0}
+    if not amount:
+        return out
+    total = senior_par + sub_par + series_c_par
+    if total <= 0:
+        out["senior"] = amount
+        return out
+    out["senior"] = amount * senior_par / total
+    out["subordinate"] = amount * sub_par / total
+    out["series_c"] = amount * series_c_par / total
+    return out
+
+
 def allocate_contribution(amount: float, series: str, senior_par: float,
                           sub_par: float, series_c_par: float) -> dict:
     """
@@ -62,13 +83,7 @@ def allocate_contribution(amount: float, series: str, senior_par: float,
     elif "series c" in s or s in ("c", "series_c", "seriesc"):
         out["series_c"] = amount
     else:  # proportional (default)
-        total = senior_par + sub_par + series_c_par
-        if total <= 0:
-            out["senior"] = amount
-        else:
-            out["senior"] = amount * senior_par / total
-            out["subordinate"] = amount * sub_par / total
-            out["series_c"] = amount * series_c_par / total
+        return allocate_by_par(amount, senior_par, sub_par, series_c_par)
     return out
 
 
@@ -102,12 +117,14 @@ def first_financing_sources_uses(
     if total_dc:
         su.sources["Developer Contribution"] = total_dc
 
+    coi = allocate_by_par(cfg.coi, senior.par_amount, sub_par, series_c_par)
     senior_reimb = (
         senior.par_amount + premium - senior.dsrf_deposit - capi - uwd_senior
-        - cfg.coi + dc["senior"]
+        - coi["senior"] + dc["senior"]
     )
-    sub_reimb = sub_par - uwd_sub + dc["subordinate"]
-    series_c_reimb = series_c_par - uwd_series_c + dc["series_c"]
+    sub_reimb = sub_par - uwd_sub - coi["subordinate"] + dc["subordinate"]
+    series_c_reimb = (series_c_par - uwd_series_c - coi["series_c"]
+                      + dc["series_c"])
 
     su.uses["Reimbursement"] = senior_reimb + sub_reimb + series_c_reimb
     su.uses["Debt Service Reserve Fund"] = senior.dsrf_deposit

@@ -17,6 +17,8 @@ import base64
 import os
 from datetime import date
 
+from .sources_uses import allocate_by_par
+
 
 def _logo_data_uri() -> str:
     """Tierra wordmark as a base64 PNG data URI (self-contained).  '' if missing."""
@@ -299,10 +301,11 @@ def build_memo_html(cfg, sm, senior, su, sub=None, refunding=None, dev=None,
     _uwd_sr = cfg.uwd_senior * sr_par
     _uwd_sb = cfg.uwd_sub * sub_par
     _uwd_sc = cfg.uwd_sub * series_c_par
-    _coi = cfg.coi
-    _reimb_sr = sr_par + _prem_sr - _dsrf - _capi - _uwd_sr - _coi + dc["senior"]
-    _reimb_sb = sub_par - _uwd_sb + dc["subordinate"]
-    _reimb_sc = series_c_par - _uwd_sc + dc["series_c"]
+    _coi = allocate_by_par(cfg.coi, sr_par, sub_par, series_c_par)
+    _coi_sr, _coi_sb, _coi_sc = _coi["senior"], _coi["subordinate"], _coi["series_c"]
+    _reimb_sr = sr_par + _prem_sr - _dsrf - _capi - _uwd_sr - _coi_sr + dc["senior"]
+    _reimb_sb = sub_par - _uwd_sb - _coi_sb + dc["subordinate"]
+    _reimb_sc = series_c_par - _uwd_sc - _coi_sc + dc["series_c"]
 
     keys = ["sr"] + (["sb"] if has_sub else []) + (["sc"] if has_c else [])
     hdrs = {"sr": f"Senior Lien Bonds<br>Series {yr}A",
@@ -314,7 +317,7 @@ def build_memo_html(cfg, sm, senior, su, sub=None, refunding=None, dev=None,
         ("Debt Service Reserve Fund", {"sr": _dsrf, "sb": 0.0, "sc": 0.0}),
         ("Capitalized Interest", {"sr": _capi, "sb": 0.0, "sc": 0.0}),
         ("Underwriter's Discount", {"sr": _uwd_sr, "sb": _uwd_sb, "sc": _uwd_sc}),
-        ("Costs of Issuance", {"sr": _coi, "sb": None, "sc": None}),
+        ("Costs of Issuance", {"sr": _coi_sr, "sb": _coi_sb, "sc": _coi_sc}),
     ]
     col_tot = {k: 0.0 for k in keys}
     grand = 0.0

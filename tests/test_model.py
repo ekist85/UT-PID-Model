@@ -779,6 +779,64 @@ def test_memo_uses_of_funds_splits_by_series(deliverables):
     assert amounts[2] == pytest.approx(amounts[0] + amounts[1], abs=1)
 
 
+def test_costs_of_issuance_are_shared_across_the_series_by_par():
+    """One set of counsel, one official statement, one trustee — so each series
+    carries its share of COI rather than the senior lien carrying all of it.
+    The developer's total reimbursement is unchanged; only its split moves."""
+    from ut_pid_model import allocate_by_par, first_financing_sources_uses
+    cfg = ModelConfig()
+    dev = viridian_farm_projections().build(cfg)
+    sm = SummaryModel(cfg, dev).build()
+    senior = size_senior_with_dynamic_dsrf(
+        SeniorLienSizer(cfg, sm),
+        name="Senior", rate=cfg.senior_interest_rate, coverage=cfg.dsc_senior,
+        delivery=cfg.delivery, first_principal_year=cfg.senior_first_principal_year,
+        final_year=cfg.senior_final_year, capi_end=cfg.capi_end_date,
+        call_provisions=CallProvisions(cfg.premium_call_date, cfg.par_call_date,
+                                       cfg.premium_call_price))
+    sub_par = 1_149_000.0
+
+    share = allocate_by_par(cfg.coi, senior.par_amount, sub_par)
+    assert share["senior"] + share["subordinate"] == pytest.approx(cfg.coi)
+    assert share["senior"] / share["subordinate"] == pytest.approx(
+        senior.par_amount / sub_par)
+    # The senior no longer eats it all, and the sub is no longer free.
+    assert 0 < share["subordinate"] < cfg.coi
+
+    su = first_financing_sources_uses(cfg, senior, sub_par)
+    assert su.balanced
+    assert su.uses["Costs of Issuance"] == pytest.approx(cfg.coi)
+    # Reimbursement is still sources less every other use — the allocation moves
+    # cost between series, it does not create or destroy any.
+    other = sum(v for k, v in su.uses.items() if k != "Reimbursement")
+    assert su.reimbursement == pytest.approx(su.total_sources - other, abs=1)
+
+    # A financing with no subordinate lien is unaffected.
+    solo = allocate_by_par(cfg.coi, senior.par_amount, 0.0)
+    assert solo["senior"] == pytest.approx(cfg.coi)
+    assert solo["subordinate"] == 0.0
+
+
+def test_sources_and_uses_tab_foots_by_column(deliverables):
+    """Each series' uses foot to that series' sources, which is what makes the
+    COI split visible and checkable on the tab."""
+    import openpyxl
+    out, _r = deliverables
+    ws = openpyxl.load_workbook(_deliverable(out, _r, WORKBOOK))["Sources & Uses - First"]
+    rows = {}
+    for row in ws.iter_rows(max_col=4):
+        label = str(row[0].value or "").strip()
+        if label:
+            rows[label] = [c.value for c in row[1:]]
+    src, uses = rows["TOTAL SOURCES OF FUNDS:"], rows["TOTAL USES OF FUNDS:"]
+    for got, want in zip(uses, src):
+        assert got == pytest.approx(want, abs=2)
+    coi = rows["Costs of Issuance"]
+    assert all(v is not None for v in coi), coi     # no blank subordinate cell
+    assert coi[0] + coi[1] == pytest.approx(coi[2], abs=2)
+    assert coi[1] > 0
+
+
 def test_memo_prints_negative_amounts_in_parentheses():
     """Utah's fixed caps let a refunding return less than it costs — the memo
     has to read as ($914,919), not $-914,919."""

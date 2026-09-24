@@ -21,6 +21,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.drawing.image import Image as _XLImage
 
 from .config import ModelConfig, residential_taxable_ratio_for
+from .sources_uses import allocate_by_par
 
 _LOGO_PATH = os.path.join(os.path.dirname(__file__), "assets", "tierra_logo.png")
 
@@ -709,12 +710,13 @@ def _build_su_first_sheet(ws, cfg, senior, sub_result, surplus_fund=None, dev=No
     uwd_sr = cfg.uwd_senior * senior_par
     uwd_sb = cfg.uwd_sub * sub_par
     uwd_sc = cfg.uwd_sub * sc_par
-    coi = cfg.coi
+    _coi = allocate_by_par(cfg.coi, senior_par, sub_par, sc_par)
+    coi_sr, coi_sb, coi_sc = _coi["senior"], _coi["subordinate"], _coi["series_c"]
     dc = contribution or {"senior": 0.0, "subordinate": 0.0, "series_c": 0.0}
     total_dc = dc["senior"] + dc["subordinate"] + dc["series_c"]
-    reimb_sr = senior_par + prem_sr - dsrf - capi - uwd_sr - coi + dc["senior"]
-    reimb_sb = sub_par - uwd_sb + dc["subordinate"]
-    reimb_sc = sc_par - uwd_sc + dc["series_c"]
+    reimb_sr = senior_par + prem_sr - dsrf - capi - uwd_sr - coi_sr + dc["senior"]
+    reimb_sb = sub_par - uwd_sb - coi_sb + dc["subordinate"]
+    reimb_sc = sc_par - uwd_sc - coi_sc + dc["series_c"]
     src_sr = senior_par + prem_sr + dc["senior"]
     src_sb = sub_par + dc["subordinate"]
     src_sc = sc_par + dc["series_c"]
@@ -788,9 +790,10 @@ def _build_su_first_sheet(ws, cfg, senior, sub_result, surplus_fund=None, dev=No
     line(r, "Debt Service Reserve Fund", dsrf, 0.0, 0.0); r += 1
     line(r, "Capitalized Interest", capi, 0.0, 0.0); r += 1
     line(r, "Underwriters' Discount", uwd_sr, uwd_sb, uwd_sc); r += 1
-    line(r, "Costs of Issuance", coi, None, None, tv=coi); r += 1
+    line(r, "Costs of Issuance", coi_sr, coi_sb, coi_sc); r += 1
     line(r, "TOTAL USES OF FUNDS:",
-         reimb_sr + dsrf + capi + uwd_sr + coi, reimb_sb + uwd_sb, reimb_sc + uwd_sc,
+         reimb_sr + dsrf + capi + uwd_sr + coi_sr,
+         reimb_sb + uwd_sb + coi_sb, reimb_sc + uwd_sc + coi_sc,
          total=True, indent=False); r += 2
 
     # ── Bond statistics (computed) ───────────────────────────────────────────
@@ -805,7 +808,7 @@ def _build_su_first_sheet(ws, cfg, senior, sub_result, surplus_fund=None, dev=No
     sr_max_ds = max(senior.annual_gross_ds().values()) if senior.schedule else 0.0
     _f = cfg.coupon_frequency
     sr_arb_tic = _tic(sr_gross, senior_par + prem_sr - uwd_sr, cfg.delivery, _f)
-    sr_allin_tic = _tic(sr_gross, senior_par + prem_sr - uwd_sr - coi, cfg.delivery, _f)
+    sr_allin_tic = _tic(sr_gross, senior_par + prem_sr - uwd_sr - coi_sr, cfg.delivery, _f)
 
     sb_avg_life = sb_total_ds = sb_max_ds = 0.0
     sb_arb_tic = None

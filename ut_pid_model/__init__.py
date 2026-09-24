@@ -35,7 +35,8 @@ from .debt_service import (
 )
 from .subordinate import SubordinateLien, SurplusFund
 from .series_c import size_series_c, SeriesCResult
-from .sources_uses import SourcesUses, first_financing_sources_uses, allocate_contribution
+from .sources_uses import (SourcesUses, first_financing_sources_uses,
+                           allocate_contribution, allocate_by_par)
 from .refunding import RefundingAnalysis, RefundingResult
 from .report import build_excel_report, deliverable_basename
 from .forecast_report import build_forecast_report
@@ -69,6 +70,7 @@ __all__ = [
     "SourcesUses",
     "first_financing_sources_uses",
     "allocate_contribution",
+    "allocate_by_par",
     "RefundingAnalysis",
     "RefundingResult",
     "build_excel_report",

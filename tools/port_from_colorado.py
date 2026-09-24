@@ -2760,6 +2760,127 @@ _p("forecast_report.py", '''        f"IN {cfg.county.upper()} COUNTY, COLORADO",
 
 
 
+# ── Costs of issuance are shared across the series, in proportion to par ─────
+# The senior lien carried the whole COI and the subordinate column was blank,
+# which overstated the senior's cost of funds and flattered the sub's.  One set
+# of counsel, one official statement and one trustee serve the whole financing,
+# so each series carries its share.  The developer's TOTAL reimbursement does
+# not move — COI comes out of proceeds once either way — only which series
+# bears it, and with it each series' reimbursement and the senior's all-in TIC.
+_p("sources_uses.py", '''def allocate_contribution(amount: float, series: str, senior_par: float,''',
+   '''def allocate_by_par(amount: float, senior_par: float, sub_par: float,
+                    series_c_par: float = 0.0) -> dict:
+    """
+    Split ``amount`` across the series in proportion to par.
+
+    Returns ``{"senior", "subordinate", "series_c"}`` dollar amounts.  With
+    nothing but a senior lien the whole amount comes back to it.
+    """
+    out = {"senior": 0.0, "subordinate": 0.0, "series_c": 0.0}
+    if not amount:
+        return out
+    total = senior_par + sub_par + series_c_par
+    if total <= 0:
+        out["senior"] = amount
+        return out
+    out["senior"] = amount * senior_par / total
+    out["subordinate"] = amount * sub_par / total
+    out["series_c"] = amount * series_c_par / total
+    return out
+
+
+def allocate_contribution(amount: float, series: str, senior_par: float,''')
+
+_p("sources_uses.py", '''    else:  # proportional (default)
+        total = senior_par + sub_par + series_c_par
+        if total <= 0:
+            out["senior"] = amount
+        else:
+            out["senior"] = amount * senior_par / total
+            out["subordinate"] = amount * sub_par / total
+            out["series_c"] = amount * series_c_par / total
+    return out''',
+   '''    else:  # proportional (default)
+        return allocate_by_par(amount, senior_par, sub_par, series_c_par)
+    return out''')
+
+_p("sources_uses.py", '''    senior_reimb = (
+        senior.par_amount + premium - senior.dsrf_deposit - capi - uwd_senior
+        - cfg.coi + dc["senior"]
+    )
+    sub_reimb = sub_par - uwd_sub + dc["subordinate"]
+    series_c_reimb = series_c_par - uwd_series_c + dc["series_c"]''',
+   '''    coi = allocate_by_par(cfg.coi, senior.par_amount, sub_par, series_c_par)
+    senior_reimb = (
+        senior.par_amount + premium - senior.dsrf_deposit - capi - uwd_senior
+        - coi["senior"] + dc["senior"]
+    )
+    sub_reimb = sub_par - uwd_sub - coi["subordinate"] + dc["subordinate"]
+    series_c_reimb = (series_c_par - uwd_series_c - coi["series_c"]
+                      + dc["series_c"])''')
+
+_p("report.py", '''from .config import ModelConfig, residential_taxable_ratio_for''',
+   '''from .config import ModelConfig, residential_taxable_ratio_for
+from .sources_uses import allocate_by_par''')
+
+_p("report.py", '''    coi = cfg.coi
+    dc = contribution or {"senior": 0.0, "subordinate": 0.0, "series_c": 0.0}
+    total_dc = dc["senior"] + dc["subordinate"] + dc["series_c"]
+    reimb_sr = senior_par + prem_sr - dsrf - capi - uwd_sr - coi + dc["senior"]
+    reimb_sb = sub_par - uwd_sb + dc["subordinate"]
+    reimb_sc = sc_par - uwd_sc + dc["series_c"]''',
+   '''    _coi = allocate_by_par(cfg.coi, senior_par, sub_par, sc_par)
+    coi_sr, coi_sb, coi_sc = _coi["senior"], _coi["subordinate"], _coi["series_c"]
+    dc = contribution or {"senior": 0.0, "subordinate": 0.0, "series_c": 0.0}
+    total_dc = dc["senior"] + dc["subordinate"] + dc["series_c"]
+    reimb_sr = senior_par + prem_sr - dsrf - capi - uwd_sr - coi_sr + dc["senior"]
+    reimb_sb = sub_par - uwd_sb - coi_sb + dc["subordinate"]
+    reimb_sc = sc_par - uwd_sc - coi_sc + dc["series_c"]''')
+
+_p("report.py", '''    line(r, "Costs of Issuance", coi, None, None, tv=coi); r += 1
+    line(r, "TOTAL USES OF FUNDS:",
+         reimb_sr + dsrf + capi + uwd_sr + coi, reimb_sb + uwd_sb, reimb_sc + uwd_sc,
+         total=True, indent=False); r += 2''',
+   '''    line(r, "Costs of Issuance", coi_sr, coi_sb, coi_sc); r += 1
+    line(r, "TOTAL USES OF FUNDS:",
+         reimb_sr + dsrf + capi + uwd_sr + coi_sr,
+         reimb_sb + uwd_sb + coi_sb, reimb_sc + uwd_sc + coi_sc,
+         total=True, indent=False); r += 2''')
+
+# The senior's all-in TIC nets the senior's own share of COI, not the whole.
+_p("report.py", '''    sr_allin_tic = _tic(sr_gross, senior_par + prem_sr - uwd_sr - coi, cfg.delivery, _f)''',
+   '''    sr_allin_tic = _tic(sr_gross, senior_par + prem_sr - uwd_sr - coi_sr, cfg.delivery, _f)''')
+
+_p("memo.py", '''import base64
+import os
+from datetime import date''',
+   '''import base64
+import os
+from datetime import date
+
+from .sources_uses import allocate_by_par''')
+
+_p("memo.py", '''    _coi = cfg.coi
+    _reimb_sr = sr_par + _prem_sr - _dsrf - _capi - _uwd_sr - _coi + dc["senior"]
+    _reimb_sb = sub_par - _uwd_sb + dc["subordinate"]
+    _reimb_sc = series_c_par - _uwd_sc + dc["series_c"]''',
+   '''    _coi = allocate_by_par(cfg.coi, sr_par, sub_par, series_c_par)
+    _coi_sr, _coi_sb, _coi_sc = _coi["senior"], _coi["subordinate"], _coi["series_c"]
+    _reimb_sr = sr_par + _prem_sr - _dsrf - _capi - _uwd_sr - _coi_sr + dc["senior"]
+    _reimb_sb = sub_par - _uwd_sb - _coi_sb + dc["subordinate"]
+    _reimb_sc = series_c_par - _uwd_sc - _coi_sc + dc["series_c"]''')
+
+_p("memo.py", '''        ("Costs of Issuance", {"sr": _coi, "sb": None, "sc": None}),''',
+   '''        ("Costs of Issuance", {"sr": _coi_sr, "sb": _coi_sb, "sc": _coi_sc}),''')
+
+_p("__init__.py", '''from .sources_uses import SourcesUses, first_financing_sources_uses, allocate_contribution''',
+   '''from .sources_uses import (SourcesUses, first_financing_sources_uses,
+                           allocate_contribution, allocate_by_par)''')
+
+_p("__init__.py", '''    "allocate_contribution",''', '''    "allocate_contribution",
+    "allocate_by_par",''')
+
+
 # ── Stale Colorado vocabulary in docstrings / section comments ───────────────
 
 _p("memo.py", '''sources & uses), but states Colorado assumptions — mill levy (governing document cap +
