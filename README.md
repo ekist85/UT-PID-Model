@@ -439,6 +439,14 @@ fails the suite.
    which is what "36 months of capitalized interest" is quoted to mean. Funding
    only the coupons falling wholly inside the period would carry the district
    for 35 months here, and for just 29 on an annual-pay bond dated 9/30/2026.
+
+   **The lien does not amortize in any year carrying capitalized interest** —
+   including the year of the straddling coupon, which is only partly
+   capitalized. The sizer tests the year's capitalized share, not whether the
+   principal date falls inside the period, so the first maturity is always the
+   year after the last capitalized one. Testing the date instead let a
+   9/30/2026 annual-pay bond size $90,000 of principal into 3/1/2030 next to
+   $261,976 of capitalized interest.
 2. **Most of the refunding's "new money" is a new subordinate lien, not an
    interest saving.** Of $1,715,067 of new money, roughly **$1,240,000** is the
    refunding subordinate lien ($1,259,000 of par, sized against the residual

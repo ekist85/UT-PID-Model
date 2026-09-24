@@ -390,10 +390,15 @@ class SeniorLienSizer:
             principals: dict[int, float] = {}
             balance = par
             for y in principal_years:
-                if (capi_end is not None
-                        and date(y, cfg.prin_maturity,
-                                 cfg.prin_maturity_day_senior) <= capi_end):
-                    # Interest capitalized — no principal sized during the CAPI period.
+                if year_capi_share(cfg, capi_end, y,
+                                   cfg.prin_maturity_day_senior) > 0:
+                    # ANY capitalized interest in a year bars principal in that
+                    # year: the lien does not amortize while the CAPI fund is
+                    # still paying part of the coupon.  So the test is on the
+                    # year's capitalized SHARE, not on whether the principal
+                    # date falls inside the period — the coupon straddling the
+                    # end of the period is partly capitalized, and its year is
+                    # interest-only like the ones before it.
                     principals[y] = 0.0
                     continue
                 net_rev = self.sm.net_senior_revenue(y)
@@ -402,21 +407,14 @@ class SeniorLienSizer:
                 # target directly rather than grossing them up by coverage.  This
                 # keeps the resulting net-DS coverage exactly at the target.
                 target = net_rev / coverage + dsrf_earn
-                gross_int = interest_of(y, balance)
-                annual_int = gross_int * (
-                    1.0 - year_capi_share(cfg, capi_end, y,
-                                          cfg.prin_maturity_day_senior))
+                annual_int = interest_of(y, balance)
                 avail = target - annual_int
                 if release_surplus and y == final_year:
                     avail += dsrf_deposit  # released DSRF pays down the final maturity
                 # Principal retired on the principal date stops earning the
                 # coupons that follow it later in the same year.
-                eff_rate = (gross_int / balance) if balance else rate
-                post_cash = 1.0 - (capi_share(
-                    date(y, cfg.prin_maturity, cfg.prin_maturity_day_senior),
-                    date(y, cfg.int_maturity, cfg.prin_maturity_day_senior),
-                    capi_end) if post_prin else 0.0)
-                avail /= max(1e-9, 1.0 - eff_rate * post_prin * post_cash)
+                eff_rate = (annual_int / balance) if balance else rate
+                avail /= max(1e-9, 1.0 - eff_rate * post_prin)
                 p = max(0.0, math.floor(avail / 5000.0) * 5000.0)
                 principals[y] = p
                 balance -= p

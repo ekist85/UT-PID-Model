@@ -189,6 +189,38 @@ def test_capi_funds_the_whole_term_not_just_the_coupons_inside_it(freq):
         senior.par_amount * cfg.senior_interest_rate * 3, rel=1e-9)
 
 
+@pytest.mark.parametrize("freq", ["Annual", "Semiannual"])
+def test_no_principal_in_any_year_that_carries_capi(freq, senior):
+    """The lien does not amortize while the CAPI fund is paying any part of the
+    coupon — including the coupon straddling the end of the period, which is
+    only partly capitalized.  Testing the principal date against the end date
+    let that year amortize: a 9/30/2026 annual-pay bond sized $90,000 of
+    principal into 3/1/2030 alongside $261,976 of capitalized interest."""
+    cfg = ModelConfig(delivery=date(2026, 9, 30), capi_term=36,
+                      interest_frequency=freq, senior_interest_rate=0.0625)
+    dev = viridian_farm_projections().build(cfg)
+    sm = SummaryModel(cfg, dev).build()
+    built = size_senior_with_dynamic_dsrf(
+        SeniorLienSizer(cfg, sm),
+        name="Senior", rate=cfg.senior_interest_rate, coverage=cfg.dsc_senior,
+        delivery=cfg.delivery, first_principal_year=cfg.senior_first_principal_year,
+        final_year=cfg.senior_final_year, capi_end=cfg.capi_end_date,
+        call_provisions=CallProvisions(cfg.premium_call_date, cfg.par_call_date,
+                                       cfg.premium_call_price))
+    for tranche in (built, senior):
+        capi_years = {p.payment_date.year for p in tranche.schedule
+                      if p.capitalized_interest > 0.005}
+        assert capi_years, "nothing capitalized"
+        offenders = [(p.payment_date, p.principal) for p in tranche.schedule
+                     if p.principal and p.payment_date.year in capi_years]
+        assert not offenders, offenders
+    # And the first maturity is the year right after the last capitalized one.
+    capi_years = {p.payment_date.year for p in built.schedule
+                  if p.capitalized_interest > 0.005}
+    first_prin = min(p.payment_date.year for p in built.schedule if p.principal)
+    assert first_prin == max(capi_years) + 1
+
+
 def test_final_maturity_is_the_last_principal_date(senior):
     """Not the last coupon.  In date order a Utah bond ends on the September
     coupon, which is not a maturity."""

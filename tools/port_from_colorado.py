@@ -2574,10 +2574,15 @@ _p("debt_service.py", '''                if capi_end_year is not None and y <= c
                     # Interest capitalized — no principal sized during the CAPI period.
                     principals[y] = 0.0
                     continue''',
-   '''                if (capi_end is not None
-                        and date(y, cfg.prin_maturity,
-                                 cfg.prin_maturity_day_senior) <= capi_end):
-                    # Interest capitalized — no principal sized during the CAPI period.
+   '''                if year_capi_share(cfg, capi_end, y,
+                                   cfg.prin_maturity_day_senior) > 0:
+                    # ANY capitalized interest in a year bars principal in that
+                    # year: the lien does not amortize while the CAPI fund is
+                    # still paying part of the coupon.  So the test is on the
+                    # year's capitalized SHARE, not on whether the principal
+                    # date falls inside the period — the coupon straddling the
+                    # end of the period is partly capitalized, and its year is
+                    # interest-only like the ones before it.
                     principals[y] = 0.0
                     continue''')
 
@@ -2668,30 +2673,10 @@ _p("debt_service.py", '''            in_capi = capi_end is not None and p.paymen
    '''            p.capitalized_interest = p.interest * capi_share(
                 prev, p.payment_date, capi_end)''')
 
-# The wrap has to see the same split, or it charges the straddling year's whole
-# coupon against revenue and under-sizes that maturity.  `eff_rate` keeps the
-# GROSS rate — it exists to model principal retired in March no longer earning
-# the September coupon, and that feedback only applies to the part of the
-# September coupon the district actually pays.
-_p("debt_service.py", '''                target = net_rev / coverage + dsrf_earn
-                annual_int = interest_of(y, balance)
-                avail = target - annual_int''',
-   '''                target = net_rev / coverage + dsrf_earn
-                gross_int = interest_of(y, balance)
-                annual_int = gross_int * (
-                    1.0 - year_capi_share(cfg, capi_end, y,
-                                          cfg.prin_maturity_day_senior))
-                avail = target - annual_int''')
-
-_p("debt_service.py", '''                eff_rate = (annual_int / balance) if balance else rate
-                avail /= max(1e-9, 1.0 - eff_rate * post_prin)''',
-   '''                eff_rate = (gross_int / balance) if balance else rate
-                post_cash = 1.0 - (capi_share(
-                    date(y, cfg.prin_maturity, cfg.prin_maturity_day_senior),
-                    date(y, cfg.int_maturity, cfg.prin_maturity_day_senior),
-                    capi_end) if post_prin else 0.0)
-                avail /= max(1e-9, 1.0 - eff_rate * post_prin * post_cash)''')
-
+# The wrap needs no partial-interest arithmetic of its own: a year holding any
+# capitalized interest is barred from carrying principal (see the skip above),
+# so every year that reaches the coverage test pays its whole coupon in cash.
+#
 # The CAPI Fund tab rolls the balance month by month.  Its last draw is now the
 # straddling coupon, which falls AFTER the end of the period, so the roll runs
 # to the last draw rather than to the end date — otherwise the tab shows a
