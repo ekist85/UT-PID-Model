@@ -1075,10 +1075,13 @@ def _build_capi_fund_sheet(ws, cfg, senior):
     tot_earned = 0.0
     cur = senior.delivery
     rw, i = 7, 0
-    while cur < cfg.capi_end_date:
+    while True:
         ny = cur.year + (1 if cur.month == 12 else 0)
         nm = 1 if cur.month == 12 else cur.month + 1
-        cur = _date(ny, nm, cfg.prin_maturity_day_senior)
+        nxt = _date(ny, nm, cfg.prin_maturity_day_senior)
+        if nxt > cfg.capi_end_date:
+            break
+        cur = nxt
         fill = _GRAY if i % 2 else _WHITE
         beg = bal
         earned = beg * monthly_rate

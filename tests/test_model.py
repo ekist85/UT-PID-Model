@@ -134,24 +134,45 @@ def test_call_dates_land_on_principal_dates():
         assert (d.month, d.day) == (cfg.prin_maturity, cfg.prin_maturity_day_senior)
 
 
-def test_capi_end_date_is_the_last_coupon_within_the_capi_term():
-    """36 months from 9/30/2026 is 9/30/2029, so the last capitalized coupon is
-    9/1/2029 on a semiannual bond — not 3/1/2029, which is 29 months.  It lands
-    on a COUPON date, which on a semiannual bond is usually the interest month,
-    never reachable by snapping to the principal month."""
-    cfg = ModelConfig(delivery=date(2026, 9, 30), capi_term=36)
-    assert cfg.capi_end_date == date(2029, 9, 1)
-    # Annual pays only in the principal month, so there the answer IS March.
-    annual = ModelConfig(delivery=date(2026, 9, 30), capi_term=36,
-                         interest_frequency="Annual")
-    assert annual.capi_end_date == date(2029, 3, 1)
-    # Always a coupon date, and never past the term.
+def test_capi_end_date_is_the_anniversary_of_the_dated_date():
+    """36 months from 9/30/2026 is 9/30/2029 — at EITHER frequency.  The end of
+    the CAPI period is the anniversary of the dated date and nothing else; it is
+    not snapped to a coupon.  Snapping back to the principal month gave 3/1/2029
+    (29 months), and snapping to the nearest coupon still gives 3/1/2029 on an
+    annual-pay bond, which is the same error wearing a different hat."""
     from ut_pid_model.config import _edate
+    for freq in ("Semiannual", "Annual"):
+        cfg = ModelConfig(delivery=date(2026, 9, 30), capi_term=36,
+                          interest_frequency=freq)
+        assert cfg.capi_end_date == date(2029, 9, 30), freq
+    # Always exactly the term, whatever the dated date and whatever the term.
     for delivery in (date(2026, 1, 15), date(2026, 5, 31), date(2026, 9, 30),
                      date(2026, 12, 1)):
-        c = ModelConfig(delivery=delivery, capi_term=36)
-        assert c.capi_end_date.month in (c.prin_maturity, c.int_maturity)
-        assert c.capi_end_date <= _edate(delivery, 36)
+        for term in (0, 18, 24, 36):
+            c = ModelConfig(delivery=delivery, capi_term=term)
+            assert c.capi_end_date == _edate(delivery, term), (delivery, term)
+
+
+def test_capi_funds_every_coupon_inside_the_term_and_no_more():
+    """A 9/30/2026 annual-pay bond capitalizes 3/1/2027, 3/1/2028 and 3/1/2029
+    — the coupons falling inside the 36 months — and the district's first cash
+    coupon is 3/1/2030, the one straddling the 9/30/2029 anniversary."""
+    cfg = ModelConfig(delivery=date(2026, 9, 30), capi_term=36,
+                      interest_frequency="Annual")
+    dev = viridian_farm_projections().build(cfg)
+    sm = SummaryModel(cfg, dev).build()
+    senior = size_senior_with_dynamic_dsrf(
+        SeniorLienSizer(cfg, sm),
+        name="Senior", rate=cfg.senior_interest_rate, coverage=cfg.dsc_senior,
+        delivery=cfg.delivery, first_principal_year=cfg.senior_first_principal_year,
+        final_year=cfg.senior_final_year, capi_end=cfg.capi_end_date,
+        call_provisions=CallProvisions(cfg.premium_call_date, cfg.par_call_date,
+                                       cfg.premium_call_price))
+    capi = [p.payment_date for p in senior.schedule if p.capitalized_interest]
+    assert capi == [date(2027, 3, 1), date(2028, 3, 1), date(2029, 3, 1)]
+    first_cash = min(p.payment_date for p in senior.schedule
+                     if p.interest and not p.capitalized_interest)
+    assert first_cash == date(2030, 3, 1)
 
 
 def test_final_maturity_is_the_last_principal_date(senior):
@@ -631,6 +652,20 @@ def test_forecast_exhibits_are_labelled_forecast_exhibits(deliverables):
                 text = str(cell.value or "")
                 for stale in ("Reimbursement Analysis", "COLORADO", "Colorado"):
                     assert stale not in text, f"{ws.title}!{cell.coordinate}: {text}"
+
+
+def test_capi_fund_tab_stops_at_the_end_of_the_capi_period(deliverables):
+    """The month-by-month fund roll ends inside the period.  Advancing before
+    testing printed one month past it once the end date stopped being a month
+    start."""
+    import openpyxl
+    out, _r = deliverables
+    wb = openpyxl.load_workbook(_deliverable(out, _r, WORKBOOK))
+    ws = wb["CAPI Fund - First"]
+    dates = [c[0].value for c in ws.iter_rows(min_row=7, max_col=1)
+             if hasattr(c[0].value, "year")]
+    assert dates
+    assert max(dates).date() <= _r["cfg"].capi_end_date
 
 
 def test_memo_states_the_utah_framework(deliverables):

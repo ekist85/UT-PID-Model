@@ -2484,12 +2484,20 @@ _p("debt_service.py", '''        Annual interest in year t = sum over maturities
 
 
 
-# ── CAPI end date lands on a COUPON date, and capitalisation is date-based ───
-# `_snap_to_payment_date` snapped back to the PRINCIPAL month only, so it could
-# never land on a September coupon: 36 months from 9/30/2026 is 9/30/2029, and
-# the model reported 3/1/2029 — 29 months.  Snap to the most recent coupon date
-# at the bond's frequency instead (9/1/2029 semiannual, 3/1/2029 annual, both
-# the last coupon on or before the anniversary).
+# ── CAPI runs the full term: it ends on the anniversary, not on a coupon ─────
+# `_snap_to_payment_date` snapped the CAPI end back to the PRINCIPAL month, so
+# a 36-month CAPI period dated 9/30/2026 was reported as ending 3/1/2029 — 29
+# months, not 36.  The period is simply the anniversary of the dated date:
+# 9/30/2029.  Do NOT snap it to a coupon.  Snapping to the nearest coupon on or
+# before the anniversary is no better — on an annual-pay bond the nearest
+# coupon IS 3/1/2029, which reproduces the very error being fixed.
+#
+# The end date bounds the period; the coupons inside it are whatever falls on
+# or before it (3/1/2027, 3/1/2028 and 3/1/2029 here, or those plus the
+# September coupons on a semiannual bond).  The remainder of the coupon that
+# straddles the anniversary is paid from revenue, as it is in the underwriter's
+# structure — the district's first cash payment is the coupon after the CAPI
+# period ends.
 #
 # And decide capitalisation by DATE rather than by year.  The year test happens
 # to give the right answer when the CAPI date falls on the later coupon, but a
@@ -2499,31 +2507,34 @@ _p("config.py", '''    @property
     def capi_end_date(self) -> date:
         """CAPI_END_DATE — last capitalized-interest payment date."""
         return self._snap_to_payment_date(_edate(self.delivery, self.capi_term))''',
-   '''    def _last_coupon_on_or_before(self, d: date) -> date:
-        """
-        The most recent COUPON date on or before ``d``.
-
-        ``_snap_to_payment_date`` only ever returns the principal month, which
-        is right for a call (bonds are redeemed on a principal date) but wrong
-        for capitalized interest, which runs to an interest payment date — and
-        on a semiannual bond that is usually the OTHER month.
-        """
-        months = ((self.prin_maturity,) if self.coupon_frequency == 1
-                  else (self.prin_maturity, self.int_maturity))
-        candidates = [date(y, m, self.prin_maturity_day_senior)
-                      for y in (d.year, d.year - 1) for m in months]
-        return max(c for c in candidates if c <= d)
-
-    @property
+   '''    @property
     def capi_end_date(self) -> date:
         """
-        CAPI_END_DATE — the last interest payment funded from bond proceeds.
+        CAPI_END_DATE — the end of the capitalized-interest period.
 
-        ``capi_term`` months from delivery, snapped back to the coupon date on
-        or before it: 36 months from 9/30/2026 is 9/30/2029, so the last
-        capitalized coupon is 9/1/2029 on a semiannual bond.
+        ``capi_term`` months from the dated/delivery date, and nothing else:
+        36 months from 9/30/2026 is 9/30/2029.  It is NOT snapped to a coupon
+        date, because the term is what the sizing is quoted on; the coupons it
+        funds are the ones falling on or before it.
         """
-        return self._last_coupon_on_or_before(_edate(self.delivery, self.capi_term))''')
+        return _edate(self.delivery, self.capi_term)''')
+
+# The CAPI Fund tab walks month by month to the end of the period.  Colorado's
+# `while cur < capi_end_date` advances first and tests afterwards, which is only
+# right when the end date IS a month start; now that it is the anniversary of
+# the dated date (9/30/2029), that loop ran one month past the period and
+# printed a 10/1/2029 row.  Test the next month before emitting it.
+_p("report.py", '''    while cur < cfg.capi_end_date:
+        ny = cur.year + (1 if cur.month == 12 else 0)
+        nm = 1 if cur.month == 12 else cur.month + 1
+        cur = _date(ny, nm, cfg.prin_maturity_day_senior)''',
+   '''    while True:
+        ny = cur.year + (1 if cur.month == 12 else 0)
+        nm = 1 if cur.month == 12 else cur.month + 1
+        nxt = _date(ny, nm, cfg.prin_maturity_day_senior)
+        if nxt > cfg.capi_end_date:
+            break
+        cur = nxt''')
 
 _p("debt_service.py", '''            capi = interest if (t.capi_end_year and d.year <= t.capi_end_year) else 0.0''',
    '''            capi = interest if (t.capi_end and d <= t.capi_end) else 0.0''')
