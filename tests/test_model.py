@@ -848,6 +848,43 @@ def _priced_tranche(coupon_scale, term_bonds, yield_scale=None):
         coupon_scale=coupon_scale, yield_scale=yield_scale, term_bonds=term_bonds)
 
 
+def test_period_count_is_day_accurate():
+    """The dated date's DAY was discarded — 5 July and 31 July priced alike."""
+    from ut_pid_model.pricing import semiannual_periods
+    mat = date(2056, 3, 1)
+    n_early = semiannual_periods(date(2026, 7, 5), mat)
+    n_late = semiannual_periods(date(2026, 7, 31), mat)
+    assert n_early != n_late
+    assert n_early == pytest.approx((30 * 360 - 4 * 30 - 4) / 180.0)
+    # A coupon-date settlement is still a whole number of periods.
+    assert semiannual_periods(date(2026, 9, 1), mat) == pytest.approx(59.0)
+
+
+def test_a_bond_reoffered_at_its_coupon_prices_at_par_on_any_dated_date():
+    """A new issue settles on its dated date, so no accrued changes hands and
+    the price is the plain present value — which is exactly 100 when the yield
+    equals the coupon, whatever the fractional first period."""
+    from ut_pid_model.pricing import price_to_worst
+    for dated in (date(2024, 9, 26), date(2026, 7, 5), date(2026, 9, 1)):
+        assert price_to_worst(dated, date(2054, 3, 1), 0.0625, 0.0625,
+                              [(date(2029, 3, 1), 103.0)]) == pytest.approx(100.0)
+
+
+def test_clean_price_matches_excel_price():
+    """clean_price is the 30/360 quoted convention — Excel PRICE() with accrued
+    subtracted.  Pinned against values computed independently."""
+    from ut_pid_model.pricing import clean_price
+    mat = date(2056, 3, 1)
+    # Settling on a coupon date: the level-coupon present value.
+    assert clean_price(date(2026, 9, 1), mat, 0.0625, 0.06625) == pytest.approx(95.1672, abs=5e-4)
+    assert clean_price(date(2026, 3, 1), mat, 0.0625, 0.06625) == pytest.approx(95.1407, abs=5e-4)
+    # Mid-period, where the accrued subtraction bites.
+    assert clean_price(date(2026, 7, 5), mat, 0.0625, 0.06625) == pytest.approx(95.1479, abs=5e-4)
+    # Par on a coupon date, and the OID sign convention.
+    assert clean_price(date(2026, 9, 1), mat, 0.05, 0.05) == pytest.approx(100.0)
+    assert clean_price(date(2026, 9, 1), mat, 0.05, 0.06) < 100.0
+
+
 def test_price_uses_the_entered_coupon_not_the_flat_sizing_rate():
     """3/1/2056 term, 6.250% coupon / 6.625% yield, callable 3/1/2031 at 103.
 
