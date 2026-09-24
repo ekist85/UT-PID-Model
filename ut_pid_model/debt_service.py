@@ -86,7 +86,7 @@ class CallProvisions:
 
 @dataclass
 class PaymentRow:
-    """One semi-annual coupon / principal payment."""
+    """One coupon / principal payment — semiannual or annual per the input."""
     payment_date: date
     principal: float
     interest: float
@@ -477,9 +477,10 @@ class SeniorLienSizer:
         Recompute each period's interest from per-maturity coupons (the schedule
         is sized with the flat rate; on pricing day coupons differ by maturity).
 
-        Annual interest in year t = sum over maturities y >= t of P_y x coupon_y;
-        split evenly across the two semi-annual coupons.  Capitalized-interest
-        years still capitalize the (recomputed) interest.
+        Annual interest in year t = sum over maturities y >= t of P_y x coupon_y,
+        apportioned to each coupon by the 30/360 days it accrues — so the first
+        coupon is a stub and an annual-pay bond takes the whole year in one.
+        Capitalized-interest years still capitalize the (recomputed) interest.
         """
         from .pricing import days_30_360
 
@@ -550,7 +551,7 @@ class SeniorLienSizer:
 
 
 def schedule_dataframe(tranche: BondTranche) -> pd.DataFrame:
-    """Flat semi-annual schedule for a single tranche."""
+    """Flat payment schedule for a single tranche, at its coupon frequency."""
     return pd.DataFrame([{
         "payment_date": p.payment_date,
         "principal": p.principal,

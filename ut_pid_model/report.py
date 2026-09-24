@@ -33,17 +33,18 @@ def _avg_life(principal_by_date, delivery, par) -> float:
     return sum(p * ((d - delivery).days / 365.25) for d, p in principal_by_date) / par
 
 
-def _tic(payments, proceeds, delivery):
+def _tic(payments, proceeds, delivery, freq: int = 2):
     """
-    True interest cost: the annual rate (semiannual compounding) at which the
-    present value of the gross debt-service ``payments`` equals ``proceeds``.
-    Solved by bisection.  ``payments`` is a list of (date, amount).
+    True interest cost: the annual rate at which the present value of the gross
+    debt-service ``payments`` equals ``proceeds``, compounded ``freq`` times a
+    year — the frequency the bonds actually pay.  Solved by bisection.
+    ``payments`` is a list of (date, amount).
     """
     if proceeds <= 0 or not payments:
         return None
 
     def pv(rate):
-        return sum(cf / (1 + rate / 2) ** (2 * ((d - delivery).days / 365.25))
+        return sum(cf / (1 + rate / freq) ** (freq * ((d - delivery).days / 365.25))
                    for d, cf in payments)
 
     lo, hi = 0.0, 0.50
@@ -799,8 +800,9 @@ def _build_su_first_sheet(ws, cfg, senior, sub_result, surplus_fund=None, dev=No
     sr_avg_life = _avg_life(sr_prin, cfg.delivery, senior_par)
     sr_total_ds = sum(p.gross_total for p in senior.schedule)
     sr_max_ds = max(senior.annual_gross_ds().values()) if senior.schedule else 0.0
-    sr_arb_tic = _tic(sr_gross, senior_par + prem_sr - uwd_sr, cfg.delivery)
-    sr_allin_tic = _tic(sr_gross, senior_par + prem_sr - uwd_sr - coi, cfg.delivery)
+    _f = cfg.coupon_frequency
+    sr_arb_tic = _tic(sr_gross, senior_par + prem_sr - uwd_sr, cfg.delivery, _f)
+    sr_allin_tic = _tic(sr_gross, senior_par + prem_sr - uwd_sr - coi, cfg.delivery, _f)
 
     sb_avg_life = sb_total_ds = sb_max_ds = 0.0
     sb_arb_tic = None
@@ -814,7 +816,7 @@ def _build_su_first_sheet(ws, cfg, senior, sub_result, surplus_fund=None, dev=No
         sb_avg_life = _avg_life(sb_prin, cfg.delivery, sub_par)
         sb_total_ds = sub_result.total_payments
         sb_max_ds = max((rr["total_paid"] for rr in sub_result.rows), default=0.0)
-        sb_arb_tic = _tic(sb_gross, sub_par - uwd_sb, cfg.delivery)
+        sb_arb_tic = _tic(sb_gross, sub_par - uwd_sb, cfg.delivery, _f)
         sb_first_mat = min((d for d, _ in sb_prin), default=None)
         sb_final = max((d for d, _ in sb_gross), default=None)
 
@@ -1012,8 +1014,9 @@ def _build_su_refunding_sheet(ws, cfg, refunding_result, dev=None):
 
     section(r, "Bond Statistics:"); r += 2
     drow(r, "Average Life (years)", _avg_life(prin, rb.delivery, par), fmt='0.00'); r += 1
-    drow(r, "Arbitrage TIC", _tic(gross, par + prem - uwd_senior, rb.delivery), fmt='0.000%'); r += 1
-    drow(r, "All-in TIC", _tic(gross, par + prem - uwd_senior - coi, rb.delivery), fmt='0.000%'); r += 1
+    _f = cfg.coupon_frequency
+    drow(r, "Arbitrage TIC", _tic(gross, par + prem - uwd_senior, rb.delivery, _f), fmt='0.000%'); r += 1
+    drow(r, "All-in TIC", _tic(gross, par + prem - uwd_senior - coi, rb.delivery, _f), fmt='0.000%'); r += 1
     drow(r, "Maximum Annual Debt Service",
          max(rb.annual_gross_ds().values()) if rb.schedule else 0.0); r += 1
     drow(r, "Total Debt Service", sum(p.gross_total for p in rb.schedule)); r += 1

@@ -938,6 +938,56 @@ def test_interest_frequency_drives_the_schedule_and_the_price():
     assert price_from_dated_date(freq=1, **kw) > price_from_dated_date(freq=2, **kw)
 
 
+def test_interest_is_paid_once_a_year_when_annual_twice_when_semiannual():
+    """Not just the number of rows — the amounts.  An annual coupon carries the
+    whole year; a semiannual one carries half, and the coupon that follows the
+    principal date carries it on the reduced balance."""
+    from ut_pid_model.pricing import days_30_360
+
+    def sized(freq):
+        cfg = ModelConfig(interest_frequency=freq)
+        dev = viridian_farm_projections().build(cfg)
+        sm = SummaryModel(cfg, dev).build()
+        return cfg, size_senior_with_dynamic_dsrf(
+            SeniorLienSizer(cfg, sm), name="Senior", rate=cfg.senior_interest_rate,
+            coverage=cfg.dsc_senior, delivery=cfg.delivery,
+            first_principal_year=cfg.senior_first_principal_year,
+            final_year=cfg.senior_final_year, capi_end_year=cfg.capi_end_date.year,
+            call_provisions=CallProvisions(cfg.premium_call_date, cfg.par_call_date,
+                                           cfg.premium_call_price))
+
+    for freq, per_year in (("Annual", 1), ("Semiannual", 2)):
+        cfg, s = sized(freq)
+        rows = s.schedule
+        stub = days_30_360(cfg.delivery, rows[0].payment_date) / 360.0
+        # First coupon: the stub, on the full par.
+        assert rows[0].interest == pytest.approx(s.par_amount * s.rate * stub, rel=1e-9)
+        # Second: a full period at this frequency, still on the full par.
+        assert rows[1].interest == pytest.approx(
+            s.par_amount * s.rate / per_year, rel=1e-9)
+        assert len([p for p in rows if p.payment_date.year == 2040]) == per_year
+
+    # The annual coupon is worth two semiannual ones.
+    _ca, ann = sized("Annual")
+    assert ann.schedule[1].interest == pytest.approx(
+        ann.par_amount * ann.rate, rel=1e-9)
+
+
+def test_tic_compounds_at_the_bond_frequency():
+    """An annual-pay bond's TIC must compound annually, or the Sources & Uses
+    statistics quote a rate the bonds do not pay."""
+    from ut_pid_model.report import _tic
+    d = date(2026, 9, 30)
+    flows = [(date(2027 + k, 3, 1), 6.25) for k in range(30)]
+    flows[-1] = (flows[-1][0], flows[-1][1] + 100.0)
+    annual = _tic(flows, 100.0, d, 1)
+    semi = _tic(flows, 100.0, d, 2)
+    assert annual != pytest.approx(semi, abs=1e-6)
+    # Same cash flows, same PV: the semiannual-compounded rate is the lower
+    # nominal one, since it compounds twice as often.
+    assert semi < annual
+
+
 def test_frequency_round_trips_through_the_inputs_page(tmp_path):
     import openpyxl
     from ut_pid_model import load_inputs_workbook, write_inputs_workbook

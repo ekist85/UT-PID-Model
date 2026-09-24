@@ -2422,6 +2422,68 @@ _p("debt_service.py", '''            price_scale=price_scale,
 
 
 
+# ── TIC compounds at the bond's own frequency ───────────────────────────────
+# True interest cost hard-coded semiannual compounding.  An annual-pay bond's
+# TIC has to compound annually, or the Sources & Uses statistics quote a rate
+# the bonds do not pay.
+_p("report.py", '''def _tic(payments, proceeds, delivery):
+    """
+    True interest cost: the annual rate (semiannual compounding) at which the
+    present value of the gross debt-service ``payments`` equals ``proceeds``.
+    Solved by bisection.  ``payments`` is a list of (date, amount).
+    """
+    if proceeds <= 0 or not payments:
+        return None
+
+    def pv(rate):
+        return sum(cf / (1 + rate / 2) ** (2 * ((d - delivery).days / 365.25))
+                   for d, cf in payments)''',
+   '''def _tic(payments, proceeds, delivery, freq: int = 2):
+    """
+    True interest cost: the annual rate at which the present value of the gross
+    debt-service ``payments`` equals ``proceeds``, compounded ``freq`` times a
+    year — the frequency the bonds actually pay.  Solved by bisection.
+    ``payments`` is a list of (date, amount).
+    """
+    if proceeds <= 0 or not payments:
+        return None
+
+    def pv(rate):
+        return sum(cf / (1 + rate / freq) ** (freq * ((d - delivery).days / 365.25))
+                   for d, cf in payments)''')
+
+_p("report.py", '''    sr_arb_tic = _tic(sr_gross, senior_par + prem_sr - uwd_sr, cfg.delivery)
+    sr_allin_tic = _tic(sr_gross, senior_par + prem_sr - uwd_sr - coi, cfg.delivery)''',
+   '''    _f = cfg.coupon_frequency
+    sr_arb_tic = _tic(sr_gross, senior_par + prem_sr - uwd_sr, cfg.delivery, _f)
+    sr_allin_tic = _tic(sr_gross, senior_par + prem_sr - uwd_sr - coi, cfg.delivery, _f)''')
+
+_p("report.py", '''        sb_arb_tic = _tic(sb_gross, sub_par - uwd_sb, cfg.delivery)''',
+   '''        sb_arb_tic = _tic(sb_gross, sub_par - uwd_sb, cfg.delivery, _f)''')
+
+_p("report.py", '''    drow(r, "Arbitrage TIC", _tic(gross, par + prem - uwd_senior, rb.delivery), fmt='0.000%'); r += 1
+    drow(r, "All-in TIC", _tic(gross, par + prem - uwd_senior - coi, rb.delivery), fmt='0.000%'); r += 1''',
+   '''    _f = cfg.coupon_frequency
+    drow(r, "Arbitrage TIC", _tic(gross, par + prem - uwd_senior, rb.delivery, _f), fmt='0.000%'); r += 1
+    drow(r, "All-in TIC", _tic(gross, par + prem - uwd_senior - coi, rb.delivery, _f), fmt='0.000%'); r += 1''')
+
+# Docstrings that still said "semi-annual" when the frequency is now an input.
+_p("debt_service.py", '''    """One semi-annual coupon / principal payment."""''',
+   '''    """One coupon / principal payment — semiannual or annual per the input."""''')
+
+_p("debt_service.py", '''    """Flat semi-annual schedule for a single tranche."""''',
+   '''    """Flat payment schedule for a single tranche, at its coupon frequency."""''')
+
+_p("debt_service.py", '''        Annual interest in year t = sum over maturities y >= t of P_y x coupon_y;
+        split evenly across the two semi-annual coupons.  Capitalized-interest
+        years still capitalize the (recomputed) interest.''',
+   '''        Annual interest in year t = sum over maturities y >= t of P_y x coupon_y,
+        apportioned to each coupon by the 30/360 days it accrues — so the first
+        coupon is a stub and an annual-pay bond takes the whole year in one.
+        Capitalized-interest years still capitalize the (recomputed) interest.''')
+
+
+
 # ── Stale Colorado vocabulary in docstrings / section comments ───────────────
 
 _p("memo.py", '''sources & uses), but states Colorado assumptions — mill levy (governing document cap +
