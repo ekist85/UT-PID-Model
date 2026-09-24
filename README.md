@@ -112,10 +112,20 @@ assessment on the same property is a statutory question this model has not
 worked through, and an untested toggle in a client-facing template is worse than
 no toggle. Turning it on is a one-line change once that authority is settled.
 
-Five upstream fixes ride in the patch set and are worth pushing back to
-`co_metro_model` (a sixth — flooring the solved subordinate par instead of
+Seven upstream fixes ride in the patch set and are worth pushing back to
+`co_metro_model` (an eighth — flooring the solved subordinate par instead of
 rounding it — was adopted upstream in `ba72e6b`, so the patch is retired):
 
+* **Interest is charged as a full half-year, including the first coupon.**
+  Interest accrues from the DATED date, so a bond not dated on a coupon date
+  owes a stub first coupon — the reference workbook's first senior coupon is
+  $143,929.34 against $167,143.75 thereafter, 155/180 of a period. Upstream
+  charged the full amount.
+* **A year's two payments are emitted mid-year coupon first, then the principal
+  date.** That is date order in Colorado (June, then December) but reversed in
+  Utah, where principal falls in March and the other coupon in September — so
+  the September coupon was charged on a balance March had already paid down.
+  The port builds the dates in order and carries a running balance through.
 * **The revenue wrap sizes at the flat rate, not the entered coupons.**
   `size_for_par` charges `balance * rate` while `_apply_coupon_scale` afterwards
   restates the real interest at the per-maturity coupons, so a deal is sized as
@@ -354,12 +364,12 @@ released debt-service-reserve fund as a balloon.
 
 | Item | Model | Pricing-day workbook | Priced deal |
 |---|---:|---:|---:|
-| Senior new-money par | $5,665,000 | $5,690,000 | $5,645,000 |
+| Senior new-money par | $5,745,000 | $5,690,000 | $5,645,000 |
 | Total taxable value, 2031 roll | $197,316,506 | $197,316,506 | — |
 | Net pledged revenue, 2028 roll | $375,746 | $375,625 | — |
 | Senior final maturity | 3/1/2054 | 3/1/2054 | 3/1/2054 |
 | DSRF | $475,000 | $545,055 | — |
-| Subordinate par | $1,152,000 (sized) | $1,000,000 (typed) | $1,000,000 |
+| Subordinate par | $1,139,000 (sized) | $1,000,000 (typed) | $1,000,000 |
 
 Taxable value ties **to the dollar** from the 2031 roll onward. Through
 build-out the model runs within 0.2% because lot inventory is carried at the

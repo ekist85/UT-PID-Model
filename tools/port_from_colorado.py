@@ -2090,6 +2090,206 @@ _p("build_notebook.py", '''    par_schedule=cfg.senior_par_schedule,''',
 
 
 
+# ── Interest accrues from the DATED date; payments run in date order ────────
+# Two defects, both exposed by the Wells Fargo / DBC run for Viridian Farm PID
+# No. 2 (dated 9/30/2026, coupons 3/1 and 9/1):
+#
+#  1. Every coupon was a full half-year, `balance * rate / 2`, including the
+#     first.  Interest has to accrue from the DATED date, so a bond not dated on
+#     a coupon date owes a STUB first coupon.  DBC's first payment is $188,226 —
+#     151/360 of a year on $7,180,000 at 6.250% — where the model charged the
+#     full $224,375.  That flows into debt service, coverage, the CAPI deposit
+#     and the price.
+#  2. The two rows in a year were emitted mid-year coupon first, then the
+#     principal date.  That is date order in Colorado (June, then December) but
+#     REVERSED in Utah, where principal falls in March and the other coupon in
+#     September — so every Utah schedule ran 9/1 before 3/1, and
+#     `_apply_coupon_scale` charged September interest on a balance that March
+#     had already paid down.
+#
+# Build the dates in order and carry a running balance and accrual date through.
+# Worth pushing back to co_metro_model.
+_p("debt_service.py", '''        # Interest accrues from the first interest date (June after delivery)
+        # through final maturity.  Principal is paid each December.
+        for y in range(t.delivery.year + 1, t.final_year + 1):
+            # June coupon (interest only)
+            jun = date(y, cfg.int_maturity, t.prin_day)
+            jun_int = balance * rate / 2.0
+            jun_capi = jun_int if (t.capi_end_year and y <= t.capi_end_year) else 0.0
+            rows.append(PaymentRow(jun, 0.0, jun_int, capitalized_interest=jun_capi))
+
+            # December coupon (interest + principal)
+            dec = date(y, t.prin_month, t.prin_day)
+            dec_int = balance * rate / 2.0
+            dec_capi = dec_int if (t.capi_end_year and y <= t.capi_end_year) else 0.0
+            p = principals.get(y, 0.0)
+            surplus_rel = t.dsrf_deposit if (release_surplus and y == t.final_year) else 0.0
+            # DSRF interest-earnings credit applies every year the fund is held,
+            # INCLUDING the final year — the reserve earns interest through the
+            # last year before its principal is released at maturity.  (This is
+            # also what the sizer assumes, so final-year coverage ties to target.)
+            earn = dsrf_earn
+            rows.append(PaymentRow(
+                dec, p, dec_int,
+                capitalized_interest=dec_capi,
+                dsrf_earnings=earn,
+                surplus_release=surplus_rel,
+            ))
+            balance -= p
+
+        return rows''',
+   '''        from .pricing import days_30_360
+
+        # Payment dates in DATE order.  Utah pays principal in March and its
+        # other coupon in September, so the mid-year coupon falls AFTER the
+        # principal date within a calendar year — the reverse of Colorado's
+        # June/December.  Sorting is what makes both states right.
+        dates = sorted({date(y, m, t.prin_day)
+                        for y in range(t.delivery.year, t.final_year + 1)
+                        for m in (cfg.int_maturity, t.prin_month)
+                        if date(y, m, t.prin_day) > t.delivery})
+
+        # Interest accrues from the DATED date, so a bond that is not dated on a
+        # coupon date owes a stub first coupon rather than a full half-year.
+        prev = t.delivery
+        for d in dates:
+            interest = balance * rate * days_30_360(prev, d) / 360.0
+            capi = interest if (t.capi_end_year and d.year <= t.capi_end_year) else 0.0
+            is_prin = d.month == t.prin_month
+            p = principals.get(d.year, 0.0) if is_prin else 0.0
+            surplus_rel = (t.dsrf_deposit if (release_surplus and is_prin
+                                              and d.year == t.final_year) else 0.0)
+            # DSRF interest-earnings credit applies every year the fund is held,
+            # INCLUDING the final year — the reserve earns interest through the
+            # last year before its principal is released at maturity.  (This is
+            # also what the sizer assumes, so final-year coverage ties to target.)
+            rows.append(PaymentRow(
+                d, p, interest,
+                capitalized_interest=capi,
+                dsrf_earnings=(dsrf_earn if is_prin else 0.0),
+                surplus_release=surplus_rel,
+            ))
+            balance -= p
+            prev = d
+
+        return rows''')
+
+_p("debt_service.py", '''        principal_by_year = {p.payment_date.year: p.principal
+                             for p in tranche.schedule if p.principal}
+        for p in tranche.schedule:
+            t = p.payment_date.year
+            annual_int = sum(P * tranche.coupon_for(y)
+                             for y, P in principal_by_year.items() if y >= t)
+            p.interest = annual_int / 2.0
+            in_capi = capi_end_year is not None and t <= capi_end_year
+            p.capitalized_interest = p.interest if in_capi else 0.0''',
+   '''        from .pricing import days_30_360
+
+        # Maturities still outstanding, retired as the schedule pays them, so a
+        # coupon that falls AFTER a principal date in the same year is charged on
+        # the reduced balance.  Accrual runs from the last payment date — the
+        # dated date for the first coupon, which is therefore a stub.
+        outstanding = {p.payment_date.year: p.principal
+                       for p in tranche.schedule if p.principal}
+        prev = tranche.delivery
+        for p in tranche.schedule:
+            annual_int = sum(P * tranche.coupon_for(y) for y, P in outstanding.items())
+            p.interest = annual_int * days_30_360(prev, p.payment_date) / 360.0
+            in_capi = (capi_end_year is not None
+                       and p.payment_date.year <= capi_end_year)
+            p.capitalized_interest = p.interest if in_capi else 0.0
+            if p.principal:
+                outstanding.pop(p.payment_date.year, None)
+            prev = p.payment_date''')
+
+
+
+# The wrap must charge the same interest the schedule now pays.  A coupon that
+# falls AFTER the principal date within a calendar year is charged on the
+# balance that principal payment has already reduced.  Colorado pays principal
+# on the LAST coupon of the year (December), so nothing follows it and the old
+# `balance * rate` was right; Utah pays principal in March with September still
+# to come, so half the year's interest is charged on the reduced balance.
+# Solving target = p + balance*r - p*r*f for p gives the extra denominator.
+_p("debt_service.py", '''        principal_years = list(range(first_principal_year, final_year + 1))''',
+   '''        principal_years = list(range(first_principal_year, final_year + 1))
+        # Share of a year's interest accruing AFTER the principal date.
+        post_prin = 0.5 if cfg.int_maturity > cfg.prin_maturity else 0.0''')
+
+_p("debt_service.py", '''                target = net_rev / coverage + dsrf_earn
+                avail = target - interest_of(y, balance)
+                if release_surplus and y == final_year:
+                    avail += dsrf_deposit  # released DSRF pays down the final maturity
+                p = max(0.0, math.floor(avail / 5000.0) * 5000.0)''',
+   '''                target = net_rev / coverage + dsrf_earn
+                annual_int = interest_of(y, balance)
+                avail = target - annual_int
+                if release_surplus and y == final_year:
+                    avail += dsrf_deposit  # released DSRF pays down the final maturity
+                # Principal retired on the principal date stops earning the
+                # coupons that follow it later in the same year.
+                eff_rate = (annual_int / balance) if balance else rate
+                avail /= max(1e-9, 1.0 - eff_rate * post_prin)
+                p = max(0.0, math.floor(avail / 5000.0) * 5000.0)''')
+
+
+
+# Price the cash flows the bond actually pays.  Now that interest accrues from
+# the dated date, the first coupon is a STUB whenever the bonds are not dated on
+# a coupon date, and the price has to discount that stub rather than a full
+# half-year.  On Viridian Farm PID No. 2 (dated 9/30/2026, 3/1/2056 maturity,
+# 6.250%/6.625%) this is 95.1516 against DBC's 95.148 — the last 0.004.
+# A bond reoffered at its coupon still prices at exactly 100: accrual and
+# discounting share the same 30/360 clock, so the identity holds through a stub.
+_p("pricing.py", '''    prices = []
+    for red_date, red_price in scenarios:
+        n = semiannual_periods(settlement, red_date, freq)
+        if n > 0:
+            prices.append(bond_price(n, coupon, ytm, red_price, freq))
+    return min(prices) if prices else 100.0''',
+   '''    prices = [price_from_dated_date(settlement, red_date, coupon, ytm, red_price, freq)
+              for red_date, red_price in scenarios if red_date > settlement]
+    return min(prices) if prices else 100.0
+
+
+def price_from_dated_date(dated: date, redemption_date: date, coupon: float,
+                          ytm: float, redemption: float = 100.0,
+                          freq: int = 2) -> float:
+    """
+    Price per 100 for a NEW ISSUE settling on its dated date.
+
+    Discounts the cash flows the bond actually pays: interest accrues from the
+    dated date on a 30/360 basis, so the first coupon is a stub whenever the
+    bonds are not dated on a coupon date, and every later coupon is a full
+    period.  No accrued interest is subtracted — none changes hands when
+    settlement is the dating.
+    """
+    step = 12 // freq
+    dates, c_date = [], redemption_date
+    while c_date > dated:
+        dates.append(c_date)
+        c_date = shift_months(c_date, -step)
+    if not dates:
+        return redemption
+    dates.reverse()
+    i = ytm / freq
+    per = 360.0 / freq
+    stub = days_30_360(dated, dates[0]) / per          # first period, in periods
+    # The odd first period discounts at SIMPLE interest (1 + i*stub), the
+    # convention Excel's ODDFPRICE uses.  It is not a nicety: interest accrues
+    # simply across the stub, so discounting it compound would break the
+    # identity that a bond reoffered at its coupon prices at exactly 100.
+    def df(d):
+        return 1.0 / ((1.0 + i * stub)
+                      * (1.0 + i) ** (days_30_360(dated, d) / per - stub))
+    price, prev = 0.0, dated
+    for d in dates:
+        price += (100.0 * coupon * days_30_360(prev, d) / 360.0) * df(d)
+        prev = d
+    return price + redemption * df(redemption_date)''')
+
+
+
 # ── Stale Colorado vocabulary in docstrings / section comments ───────────────
 
 _p("memo.py", '''sources & uses), but states Colorado assumptions — mill levy (governing document cap +

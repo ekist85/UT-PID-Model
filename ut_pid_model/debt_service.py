@@ -318,6 +318,8 @@ class SeniorLienSizer:
         dsrf_earn = dsrf_deposit * cfg.interest_earn_rate
 
         principal_years = list(range(first_principal_year, final_year + 1))
+        # Share of a year's interest accruing AFTER the principal date.
+        post_prin = 0.5 if cfg.int_maturity > cfg.prin_maturity else 0.0
 
         def _wrap(par: float, interest_of) -> dict[int, float]:
             """The wrap formula for an assumed par, charging ``interest_of(year,
@@ -335,9 +337,14 @@ class SeniorLienSizer:
                 # target directly rather than grossing them up by coverage.  This
                 # keeps the resulting net-DS coverage exactly at the target.
                 target = net_rev / coverage + dsrf_earn
-                avail = target - interest_of(y, balance)
+                annual_int = interest_of(y, balance)
+                avail = target - annual_int
                 if release_surplus and y == final_year:
                     avail += dsrf_deposit  # released DSRF pays down the final maturity
+                # Principal retired on the principal date stops earning the
+                # coupons that follow it later in the same year.
+                eff_rate = (annual_int / balance) if balance else rate
+                avail /= max(1e-9, 1.0 - eff_rate * post_prin)
                 p = max(0.0, math.floor(avail / 5000.0) * 5000.0)
                 principals[y] = p
                 balance -= p
@@ -451,15 +458,24 @@ class SeniorLienSizer:
         split evenly across the two semi-annual coupons.  Capitalized-interest
         years still capitalize the (recomputed) interest.
         """
-        principal_by_year = {p.payment_date.year: p.principal
-                             for p in tranche.schedule if p.principal}
+        from .pricing import days_30_360
+
+        # Maturities still outstanding, retired as the schedule pays them, so a
+        # coupon that falls AFTER a principal date in the same year is charged on
+        # the reduced balance.  Accrual runs from the last payment date — the
+        # dated date for the first coupon, which is therefore a stub.
+        outstanding = {p.payment_date.year: p.principal
+                       for p in tranche.schedule if p.principal}
+        prev = tranche.delivery
         for p in tranche.schedule:
-            t = p.payment_date.year
-            annual_int = sum(P * tranche.coupon_for(y)
-                             for y, P in principal_by_year.items() if y >= t)
-            p.interest = annual_int / 2.0
-            in_capi = capi_end_year is not None and t <= capi_end_year
+            annual_int = sum(P * tranche.coupon_for(y) for y, P in outstanding.items())
+            p.interest = annual_int * days_30_360(prev, p.payment_date) / 360.0
+            in_capi = (capi_end_year is not None
+                       and p.payment_date.year <= capi_end_year)
             p.capitalized_interest = p.interest if in_capi else 0.0
+            if p.principal:
+                outstanding.pop(p.payment_date.year, None)
+            prev = p.payment_date
 
     # ── Semi-annual amortization schedule ────────────────────────────────────
     def _build_schedule(
@@ -471,33 +487,39 @@ class SeniorLienSizer:
         balance = t.par_amount
         dsrf_earn = t.dsrf_deposit * t.dsrf_earn_rate
 
-        # Interest accrues from the first interest date (June after delivery)
-        # through final maturity.  Principal is paid each December.
-        for y in range(t.delivery.year + 1, t.final_year + 1):
-            # June coupon (interest only)
-            jun = date(y, cfg.int_maturity, t.prin_day)
-            jun_int = balance * rate / 2.0
-            jun_capi = jun_int if (t.capi_end_year and y <= t.capi_end_year) else 0.0
-            rows.append(PaymentRow(jun, 0.0, jun_int, capitalized_interest=jun_capi))
+        from .pricing import days_30_360
 
-            # December coupon (interest + principal)
-            dec = date(y, t.prin_month, t.prin_day)
-            dec_int = balance * rate / 2.0
-            dec_capi = dec_int if (t.capi_end_year and y <= t.capi_end_year) else 0.0
-            p = principals.get(y, 0.0)
-            surplus_rel = t.dsrf_deposit if (release_surplus and y == t.final_year) else 0.0
+        # Payment dates in DATE order.  Utah pays principal in March and its
+        # other coupon in September, so the mid-year coupon falls AFTER the
+        # principal date within a calendar year — the reverse of Colorado's
+        # June/December.  Sorting is what makes both states right.
+        dates = sorted({date(y, m, t.prin_day)
+                        for y in range(t.delivery.year, t.final_year + 1)
+                        for m in (cfg.int_maturity, t.prin_month)
+                        if date(y, m, t.prin_day) > t.delivery})
+
+        # Interest accrues from the DATED date, so a bond that is not dated on a
+        # coupon date owes a stub first coupon rather than a full half-year.
+        prev = t.delivery
+        for d in dates:
+            interest = balance * rate * days_30_360(prev, d) / 360.0
+            capi = interest if (t.capi_end_year and d.year <= t.capi_end_year) else 0.0
+            is_prin = d.month == t.prin_month
+            p = principals.get(d.year, 0.0) if is_prin else 0.0
+            surplus_rel = (t.dsrf_deposit if (release_surplus and is_prin
+                                              and d.year == t.final_year) else 0.0)
             # DSRF interest-earnings credit applies every year the fund is held,
             # INCLUDING the final year — the reserve earns interest through the
             # last year before its principal is released at maturity.  (This is
             # also what the sizer assumes, so final-year coverage ties to target.)
-            earn = dsrf_earn
             rows.append(PaymentRow(
-                dec, p, dec_int,
-                capitalized_interest=dec_capi,
-                dsrf_earnings=earn,
+                d, p, interest,
+                capitalized_interest=capi,
+                dsrf_earnings=(dsrf_earn if is_prin else 0.0),
                 surplus_release=surplus_rel,
             ))
             balance -= p
+            prev = d
 
         return rows
 

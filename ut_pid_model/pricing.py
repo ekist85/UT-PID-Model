@@ -109,9 +109,43 @@ def price_to_worst(settlement: date, maturity: date, coupon: float, ytm: float,
     for call_date, call_price in calls:
         if settlement < call_date < maturity:
             scenarios.append((call_date, call_price))
-    prices = []
-    for red_date, red_price in scenarios:
-        n = semiannual_periods(settlement, red_date, freq)
-        if n > 0:
-            prices.append(bond_price(n, coupon, ytm, red_price, freq))
+    prices = [price_from_dated_date(settlement, red_date, coupon, ytm, red_price, freq)
+              for red_date, red_price in scenarios if red_date > settlement]
     return min(prices) if prices else 100.0
+
+
+def price_from_dated_date(dated: date, redemption_date: date, coupon: float,
+                          ytm: float, redemption: float = 100.0,
+                          freq: int = 2) -> float:
+    """
+    Price per 100 for a NEW ISSUE settling on its dated date.
+
+    Discounts the cash flows the bond actually pays: interest accrues from the
+    dated date on a 30/360 basis, so the first coupon is a stub whenever the
+    bonds are not dated on a coupon date, and every later coupon is a full
+    period.  No accrued interest is subtracted — none changes hands when
+    settlement is the dating.
+    """
+    step = 12 // freq
+    dates, c_date = [], redemption_date
+    while c_date > dated:
+        dates.append(c_date)
+        c_date = shift_months(c_date, -step)
+    if not dates:
+        return redemption
+    dates.reverse()
+    i = ytm / freq
+    per = 360.0 / freq
+    stub = days_30_360(dated, dates[0]) / per          # first period, in periods
+    # The odd first period discounts at SIMPLE interest (1 + i*stub), the
+    # convention Excel's ODDFPRICE uses.  It is not a nicety: interest accrues
+    # simply across the stub, so discounting it compound would break the
+    # identity that a bond reoffered at its coupon prices at exactly 100.
+    def df(d):
+        return 1.0 / ((1.0 + i * stub)
+                      * (1.0 + i) ** (days_30_360(dated, d) / per - stub))
+    price, prev = 0.0, dated
+    for d in dates:
+        price += (100.0 * coupon * days_30_360(prev, d) / 360.0) * df(d)
+        prev = d
+    return price + redemption * df(redemption_date)
