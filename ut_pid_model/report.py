@@ -1050,7 +1050,7 @@ def _build_capi_fund_sheet(ws, cfg, senior):
     capi_rows = [p for p in senior.schedule if p.capitalized_interest > 0.005]
     deposit = sum(p.capitalized_interest for p in senior.schedule)
     _title(ws, cfg, [cfg.pid_name, "Capitalized Interest (CAPI) Fund — Senior Lien",
-                f"${deposit:,.0f} funds ~{cfg.capi_term} months of interest through "
+                f"${deposit:,.0f} funds {cfg.capi_term} months of interest through "
                 f"{_ym(cfg.capi_end_date)}; balance earns {cfg.interest_earn_rate:.2%}/yr"], 6)
     for c, lbl, w in [(1, "Date", 13), (2, "Beginning\nBalance", 16),
                       (3, "Periodic\nRate", 11), (4, "Interest\nEarned", 14),
@@ -1075,11 +1075,12 @@ def _build_capi_fund_sheet(ws, cfg, senior):
     tot_earned = 0.0
     cur = senior.delivery
     rw, i = 7, 0
+    last = max([p.payment_date for p in capi_rows] + [cfg.capi_end_date])
     while True:
         ny = cur.year + (1 if cur.month == 12 else 0)
         nm = 1 if cur.month == 12 else cur.month + 1
         nxt = _date(ny, nm, cfg.prin_maturity_day_senior)
-        if nxt > cfg.capi_end_date:
+        if (nxt.year, nxt.month) > (last.year, last.month):
             break
         cur = nxt
         fill = _GRAY if i % 2 else _WHITE

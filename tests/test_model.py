@@ -153,12 +153,18 @@ def test_capi_end_date_is_the_anniversary_of_the_dated_date():
             assert c.capi_end_date == _edate(delivery, term), (delivery, term)
 
 
-def test_capi_funds_every_coupon_inside_the_term_and_no_more():
-    """A 9/30/2026 annual-pay bond capitalizes 3/1/2027, 3/1/2028 and 3/1/2029
-    — the coupons falling inside the 36 months — and the district's first cash
-    coupon is 3/1/2030, the one straddling the 9/30/2029 anniversary."""
+@pytest.mark.parametrize("freq", ["Annual", "Semiannual"])
+def test_capi_funds_the_whole_term_not_just_the_coupons_inside_it(freq):
+    """A 36-month CAPI fund carries the district for 36 months.
+
+    An annual-pay bond dated 9/30/2026 pays 3/1/2027, 3/1/2028 and 3/1/2029
+    inside the period — only 29 months of accrual — so funding just those left
+    the district paying the 3/1/2030 coupon in full, seven months of which
+    belong to the CAPI period.  The fund now pays interest ACCRUED through
+    9/30/2029: the straddling coupon is split and the deposit equals exactly
+    three years of interest on the par."""
     cfg = ModelConfig(delivery=date(2026, 9, 30), capi_term=36,
-                      interest_frequency="Annual")
+                      interest_frequency=freq)
     dev = viridian_farm_projections().build(cfg)
     sm = SummaryModel(cfg, dev).build()
     senior = size_senior_with_dynamic_dsrf(
@@ -168,11 +174,19 @@ def test_capi_funds_every_coupon_inside_the_term_and_no_more():
         final_year=cfg.senior_final_year, capi_end=cfg.capi_end_date,
         call_provisions=CallProvisions(cfg.premium_call_date, cfg.par_call_date,
                                        cfg.premium_call_price))
-    capi = [p.payment_date for p in senior.schedule if p.capitalized_interest]
-    assert capi == [date(2027, 3, 1), date(2028, 3, 1), date(2029, 3, 1)]
-    first_cash = min(p.payment_date for p in senior.schedule
-                     if p.interest and not p.capitalized_interest)
-    assert first_cash == date(2030, 3, 1)
+    rows = [p for p in senior.schedule if p.capitalized_interest]
+    # Every coupon inside the period is funded in full; the one straddling the
+    # anniversary is funded in part; nothing past it is funded at all.
+    whole = [p for p in rows if p.payment_date <= cfg.capi_end_date]
+    part = [p for p in rows if p.payment_date > cfg.capi_end_date]
+    assert whole and all(
+        p.capitalized_interest == pytest.approx(p.interest) for p in whole)
+    assert len(part) == 1 and part[0].payment_date == date(2030, 3, 1)
+    assert 0 < part[0].capitalized_interest < part[0].interest
+    # Three years of interest on the par, to the cent — no more, no less.
+    deposit = sum(p.capitalized_interest for p in senior.schedule)
+    assert deposit == pytest.approx(
+        senior.par_amount * cfg.senior_interest_rate * 3, rel=1e-9)
 
 
 def test_final_maturity_is_the_last_principal_date(senior):
@@ -186,15 +200,20 @@ def test_final_maturity_is_the_last_principal_date(senior):
 
 
 def test_capitalised_coupons_are_decided_by_date_not_by_year(built, senior):
-    """Every capitalized coupon falls on or before the CAPI end date, and the
-    first one after it is not capitalized."""
+    """Coupons on or before the CAPI end date are funded in full; at most one
+    coupon past it is funded, and only in part; everything beyond that is the
+    district's."""
     cfg, _dev, _sm = built
     rows = senior.schedule
     capi = [p for p in rows if p.capitalized_interest]
     assert capi, "nothing capitalized"
-    assert all(p.payment_date <= cfg.capi_end_date for p in capi)
-    after = [p for p in rows if p.payment_date > cfg.capi_end_date]
-    assert after and all(p.capitalized_interest == 0 for p in after)
+    assert all(p.capitalized_interest == pytest.approx(p.interest)
+               for p in capi if p.payment_date <= cfg.capi_end_date)
+    after = sorted((p for p in rows if p.payment_date > cfg.capi_end_date),
+                   key=lambda p: p.payment_date)
+    assert after
+    assert after[0].capitalized_interest < after[0].interest
+    assert all(p.capitalized_interest == 0 for p in after[1:])
 
 
 def test_utah_reassesses_annually():
@@ -654,18 +673,21 @@ def test_forecast_exhibits_are_labelled_forecast_exhibits(deliverables):
                     assert stale not in text, f"{ws.title}!{cell.coordinate}: {text}"
 
 
-def test_capi_fund_tab_stops_at_the_end_of_the_capi_period(deliverables):
-    """The month-by-month fund roll ends inside the period.  Advancing before
-    testing printed one month past it once the end date stopped being a month
-    start."""
+def test_capi_fund_tab_runs_through_its_last_draw(deliverables):
+    """The month-by-month fund roll ends on the month of the last draw — which
+    is the straddling coupon, after the end of the period — and no later, so the
+    tab neither shows a deposit it never spends nor trails empty months."""
     import openpyxl
     out, _r = deliverables
+    senior = _r["senior"]
     wb = openpyxl.load_workbook(_deliverable(out, _r, WORKBOOK))
     ws = wb["CAPI Fund - First"]
-    dates = [c[0].value for c in ws.iter_rows(min_row=7, max_col=1)
+    dates = [c[0].value.date() for c in ws.iter_rows(min_row=7, max_col=1)
              if hasattr(c[0].value, "year")]
+    last_draw = max(p.payment_date for p in senior.schedule
+                    if p.capitalized_interest > 0.005)
     assert dates
-    assert max(dates).date() <= _r["cfg"].capi_end_date
+    assert (max(dates).year, max(dates).month) == (last_draw.year, last_draw.month)
 
 
 def test_memo_states_the_utah_framework(deliverables):

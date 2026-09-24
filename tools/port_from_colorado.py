@@ -2597,6 +2597,126 @@ _p("report.py", '''    final_mat = max((p.payment_date for p in rb.schedule), de
 
 
 
+# ── A 36-month CAPI period funds 36 months of interest ──────────────────────
+# Capitalisation was all-or-nothing per coupon: a payment falling on or before
+# the CAPI end date was fully capitalized, anything after it was not.  That is
+# right only when the end date lands on a coupon.  It does not here.  An
+# annual-pay bond dated 9/30/2026 with a 36-month period pays 3/1/2027, 3/1/2028
+# and 3/1/2029 inside the period — 29 months of accrual — and the 3/1/2030
+# coupon, which covers the remaining seven months, fell entirely to the
+# district.  A "36 month" CAPI fund was carrying the district for 29.
+#
+# The fund now pays interest ACCRUED through the end date, so the coupon that
+# straddles it is split: the CAPI fund pays the part accrued on or before
+# 9/30/2029 and the district pays the rest.  This is how a capitalized-interest
+# fund is sized in practice — proceeds are deposited to cover interest through a
+# date, and the last draw is a partial coupon.  Where the end date does land on
+# a coupon the share is 1 or 0 and nothing changes.
+_p("debt_service.py", '''    return _schedule_lookup(coupon_scale, lookup_year, rate)''',
+   '''    return _schedule_lookup(coupon_scale, lookup_year, rate)
+
+
+def capi_share(prev: date, pay: date, capi_end: "date | None") -> float:
+    """
+    Share of the interest accruing over ``(prev, pay]`` that the CAPI fund pays.
+
+    1.0 while the whole accrual period sits inside the capitalized-interest
+    period, 0.0 once it is entirely past it, and the 30/360 day fraction for the
+    one coupon that straddles the end date.
+    """
+    if capi_end is None or prev >= capi_end:
+        return 0.0
+    if pay <= capi_end:
+        return 1.0
+    span = days_30_360(prev, pay)
+    return (days_30_360(prev, capi_end) / span) if span else 0.0
+
+
+def year_capi_share(cfg, capi_end: "date | None", year: int, prin_day: int) -> float:
+    """
+    Share of a DEBT-SERVICE YEAR's interest that the CAPI fund pays.
+
+    The sizer works a year at a time, so it needs the year's blended share
+    rather than a single coupon's: it weights each coupon in the year by the
+    30/360 days it accrues.
+    """
+    if capi_end is None:
+        return 0.0
+    months = ((cfg.prin_maturity,) if cfg.coupon_frequency == 1
+              else (cfg.prin_maturity, cfg.int_maturity))
+    dates = sorted(date(y, m, prin_day) for y in (year - 1, year) for m in months)
+    num = den = 0.0
+    for prev, pay in zip(dates, dates[1:]):
+        if pay.year != year:
+            continue
+        span = days_30_360(prev, pay)
+        den += span
+        num += span * capi_share(prev, pay, capi_end)
+    return (num / den) if den else 0.0''')
+
+_p("debt_service.py", '''from .config import ModelConfig
+from .summary import SummaryModel''',
+   '''from .config import ModelConfig
+from .pricing import days_30_360
+from .summary import SummaryModel''')
+
+_p("debt_service.py", '''            capi = interest if (t.capi_end and d <= t.capi_end) else 0.0''',
+   '''            capi = interest * capi_share(prev, d, t.capi_end)''')
+
+_p("debt_service.py", '''            in_capi = capi_end is not None and p.payment_date <= capi_end
+            p.capitalized_interest = p.interest if in_capi else 0.0''',
+   '''            p.capitalized_interest = p.interest * capi_share(
+                prev, p.payment_date, capi_end)''')
+
+# The wrap has to see the same split, or it charges the straddling year's whole
+# coupon against revenue and under-sizes that maturity.  `eff_rate` keeps the
+# GROSS rate — it exists to model principal retired in March no longer earning
+# the September coupon, and that feedback only applies to the part of the
+# September coupon the district actually pays.
+_p("debt_service.py", '''                target = net_rev / coverage + dsrf_earn
+                annual_int = interest_of(y, balance)
+                avail = target - annual_int''',
+   '''                target = net_rev / coverage + dsrf_earn
+                gross_int = interest_of(y, balance)
+                annual_int = gross_int * (
+                    1.0 - year_capi_share(cfg, capi_end, y,
+                                          cfg.prin_maturity_day_senior))
+                avail = target - annual_int''')
+
+_p("debt_service.py", '''                eff_rate = (annual_int / balance) if balance else rate
+                avail /= max(1e-9, 1.0 - eff_rate * post_prin)''',
+   '''                eff_rate = (gross_int / balance) if balance else rate
+                post_cash = 1.0 - (capi_share(
+                    date(y, cfg.prin_maturity, cfg.prin_maturity_day_senior),
+                    date(y, cfg.int_maturity, cfg.prin_maturity_day_senior),
+                    capi_end) if post_prin else 0.0)
+                avail /= max(1e-9, 1.0 - eff_rate * post_prin * post_cash)''')
+
+# The CAPI Fund tab rolls the balance month by month.  Its last draw is now the
+# straddling coupon, which falls AFTER the end of the period, so the roll runs
+# to the last draw rather than to the end date — otherwise the tab shows a
+# deposit it never spends.
+_p("report.py", '''    while True:
+        ny = cur.year + (1 if cur.month == 12 else 0)
+        nm = 1 if cur.month == 12 else cur.month + 1
+        nxt = _date(ny, nm, cfg.prin_maturity_day_senior)
+        if nxt > cfg.capi_end_date:
+            break
+        cur = nxt''',
+   '''    last = max([p.payment_date for p in capi_rows] + [cfg.capi_end_date])
+    while True:
+        ny = cur.year + (1 if cur.month == 12 else 0)
+        nm = 1 if cur.month == 12 else cur.month + 1
+        nxt = _date(ny, nm, cfg.prin_maturity_day_senior)
+        if (nxt.year, nxt.month) > (last.year, last.month):
+            break
+        cur = nxt''')
+
+# The deposit is exactly the term's interest now, so drop the "~".
+_p("report.py", '''                f"${deposit:,.0f} funds ~{cfg.capi_term} months of interest through "''',
+   '''                f"${deposit:,.0f} funds {cfg.capi_term} months of interest through "''')
+
+
 # ── Exhibits are named for what they are, and the county line says Utah ─────
 # The forecast exhibits are not a reimbursement analysis, so "Forecast
 # Exhibits" takes the slot after the date rather than trailing behind the whole

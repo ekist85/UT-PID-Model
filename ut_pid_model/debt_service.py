@@ -32,6 +32,7 @@ from typing import Optional
 import pandas as pd
 
 from .config import ModelConfig
+from .pricing import days_30_360
 from .summary import SummaryModel
 
 
@@ -138,6 +139,45 @@ def coupon_at(coupon_scale, term_bonds, rate: float, year: int) -> float:
             lookup_year = last
             break
     return _schedule_lookup(coupon_scale, lookup_year, rate)
+
+
+def capi_share(prev: date, pay: date, capi_end: "date | None") -> float:
+    """
+    Share of the interest accruing over ``(prev, pay]`` that the CAPI fund pays.
+
+    1.0 while the whole accrual period sits inside the capitalized-interest
+    period, 0.0 once it is entirely past it, and the 30/360 day fraction for the
+    one coupon that straddles the end date.
+    """
+    if capi_end is None or prev >= capi_end:
+        return 0.0
+    if pay <= capi_end:
+        return 1.0
+    span = days_30_360(prev, pay)
+    return (days_30_360(prev, capi_end) / span) if span else 0.0
+
+
+def year_capi_share(cfg, capi_end: "date | None", year: int, prin_day: int) -> float:
+    """
+    Share of a DEBT-SERVICE YEAR's interest that the CAPI fund pays.
+
+    The sizer works a year at a time, so it needs the year's blended share
+    rather than a single coupon's: it weights each coupon in the year by the
+    30/360 days it accrues.
+    """
+    if capi_end is None:
+        return 0.0
+    months = ((cfg.prin_maturity,) if cfg.coupon_frequency == 1
+              else (cfg.prin_maturity, cfg.int_maturity))
+    dates = sorted(date(y, m, prin_day) for y in (year - 1, year) for m in months)
+    num = den = 0.0
+    for prev, pay in zip(dates, dates[1:]):
+        if pay.year != year:
+            continue
+        span = days_30_360(prev, pay)
+        den += span
+        num += span * capi_share(prev, pay, capi_end)
+    return (num / den) if den else 0.0
 
 
 @dataclass
@@ -362,14 +402,21 @@ class SeniorLienSizer:
                 # target directly rather than grossing them up by coverage.  This
                 # keeps the resulting net-DS coverage exactly at the target.
                 target = net_rev / coverage + dsrf_earn
-                annual_int = interest_of(y, balance)
+                gross_int = interest_of(y, balance)
+                annual_int = gross_int * (
+                    1.0 - year_capi_share(cfg, capi_end, y,
+                                          cfg.prin_maturity_day_senior))
                 avail = target - annual_int
                 if release_surplus and y == final_year:
                     avail += dsrf_deposit  # released DSRF pays down the final maturity
                 # Principal retired on the principal date stops earning the
                 # coupons that follow it later in the same year.
-                eff_rate = (annual_int / balance) if balance else rate
-                avail /= max(1e-9, 1.0 - eff_rate * post_prin)
+                eff_rate = (gross_int / balance) if balance else rate
+                post_cash = 1.0 - (capi_share(
+                    date(y, cfg.prin_maturity, cfg.prin_maturity_day_senior),
+                    date(y, cfg.int_maturity, cfg.prin_maturity_day_senior),
+                    capi_end) if post_prin else 0.0)
+                avail /= max(1e-9, 1.0 - eff_rate * post_prin * post_cash)
                 p = max(0.0, math.floor(avail / 5000.0) * 5000.0)
                 principals[y] = p
                 balance -= p
@@ -496,8 +543,8 @@ class SeniorLienSizer:
         for p in tranche.schedule:
             annual_int = sum(P * tranche.coupon_for(y) for y, P in outstanding.items())
             p.interest = annual_int * days_30_360(prev, p.payment_date) / 360.0
-            in_capi = capi_end is not None and p.payment_date <= capi_end
-            p.capitalized_interest = p.interest if in_capi else 0.0
+            p.capitalized_interest = p.interest * capi_share(
+                prev, p.payment_date, capi_end)
             if p.principal:
                 outstanding.pop(p.payment_date.year, None)
             prev = p.payment_date
@@ -530,7 +577,7 @@ class SeniorLienSizer:
         prev = t.delivery
         for d in dates:
             interest = balance * rate * days_30_360(prev, d) / 360.0
-            capi = interest if (t.capi_end and d <= t.capi_end) else 0.0
+            capi = interest * capi_share(prev, d, t.capi_end)
             is_prin = d.month == t.prin_month
             p = principals.get(d.year, 0.0) if is_prin else 0.0
             surplus_rel = (t.dsrf_deposit if (release_surplus and is_prin

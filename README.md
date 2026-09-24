@@ -426,11 +426,19 @@ fails the suite.
 ## Two things worth reading in the output
 
 1. **Coverage dips below 1.00x in the first year after capitalized interest
-   runs out** (0.82x in 2028 on the base case). The reference workbook has the
+   runs out** (0.87x in 2028 on the base case). The reference workbook has the
    same shape — the sizer only coverage-tests years that carry principal, so
    interest-only years are not tested. The shortfall is met from the debt
    service reserve. Lengthening the capitalized interest period past 36 months
    closes it.
+
+   The CAPI fund covers the term, not a whole number of coupons: 36 months from
+   a 9/26/2024 dated date runs to 9/26/2027, so the coupon that straddles that
+   date is split — the fund pays the part accrued on or before it and the
+   district pays the rest. The deposit is therefore exactly `par × coupon × 3`,
+   which is what "36 months of capitalized interest" is quoted to mean. Funding
+   only the coupons falling wholly inside the period would carry the district
+   for 35 months here, and for just 29 on an annual-pay bond dated 9/30/2026.
 2. **Most of the refunding's "new money" is a new subordinate lien, not an
    interest saving.** Of $1,715,067 of new money, roughly **$1,240,000** is the
    refunding subordinate lien ($1,259,000 of par, sized against the residual
