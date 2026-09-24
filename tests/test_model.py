@@ -781,6 +781,59 @@ def test_title_band_and_file_names_carry_the_same_date_format(deliverables):
     assert banded >= 14, banded
 
 
+# ── Bond pricing ─────────────────────────────────────────────────────────────
+
+def _priced_tranche(coupon_scale, term_bonds, yield_scale=None):
+    from ut_pid_model.debt_service import BondTranche
+    return BondTranche(
+        name="Senior", rate=0.05875, coverage=1.30, delivery=date(2026, 9, 1),
+        first_principal_year=2027, final_year=2056, prin_month=3, prin_day=1,
+        capi_end_year=None, dsrf_deposit=0.0, dsrf_earn_rate=0.0,
+        par_amount=10_000_000.0,
+        call_provisions=CallProvisions(date(2031, 3, 1), date(2034, 3, 1), 103.0),
+        coupon_scale=coupon_scale, yield_scale=yield_scale, term_bonds=term_bonds)
+
+
+def test_price_uses_the_entered_coupon_not_the_flat_sizing_rate():
+    """3/1/2056 term, 6.250% coupon / 6.625% yield, callable 3/1/2031 at 103.
+
+    Pricing passed the Inputs-page flat rate (5.875%) as the coupon, which
+    priced this at 90.3345 instead of 95.1672 — a 4.8-point error on the OID,
+    and the OID is a Source of Funds."""
+    t = _priced_tranche({2056: 0.0625}, [(2027, 2056, 0.06625)])
+    assert t.price_for(2056) == pytest.approx(95.1672, abs=5e-4)
+    # Every installment of the term prices at the term's own coupon and yield.
+    assert t.price_for(2040) == pytest.approx(t.price_for(2056), abs=1e-9)
+    # A discount bond prices to maturity, not to the premium call.
+    from ut_pid_model.pricing import bond_price
+    assert bond_price(9.0, 0.0625, 0.06625, 103.0) > t.price_for(2056)
+
+
+def test_a_par_bond_still_prices_at_par():
+    t = _priced_tranche({2056: 0.0625}, [(2027, 2056, 0.0625)])
+    assert t.price_for(2056) == pytest.approx(100.0, abs=1e-9)
+    assert t.premium_for(2056, 10_000_000) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_each_term_bond_prices_at_its_own_coupon():
+    """The coupon sits on the term's FINAL maturity row, and _schedule_lookup
+    carries forward — so a later term must not inherit the earlier term's."""
+    t = _priced_tranche({2040: 0.0500, 2056: 0.0625},
+                        [(2027, 2040, 0.0525), (2041, 2056, 0.06625)])
+    assert t.coupon_for(2035) == pytest.approx(0.0500)
+    assert t.coupon_for(2045) == pytest.approx(0.0625)
+    assert t.price_for(2045) == pytest.approx(t.price_for(2056), abs=1e-9)
+    assert t.price_for(2035) != pytest.approx(t.price_for(2045), abs=1e-6)
+
+
+def test_blank_debt_structure_prices_at_the_flat_rate():
+    """No coupon scale ⇒ the flat rate is the coupon, and a bond reoffered at
+    its coupon prices at par.  The base case must not move."""
+    t = _priced_tranche(None, None)
+    assert t.coupon_for(2040) == pytest.approx(0.05875)
+    assert t.price_for(2056) == pytest.approx(100.0, abs=1e-9)
+
+
 # ── Debt Structure tab (per-maturity par / coupon / yield, serial|term) ──────
 
 def _debt_structure_sheet(tmp_path, name="ds.xlsx"):

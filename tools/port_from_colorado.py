@@ -1588,6 +1588,55 @@ _p("inputs.py", '''        if not rows:''',
 
 
 
+# ── Pricing uses the entered coupon, not the flat sizing rate ────────────────
+# `price_for` passed `self.rate` — the Inputs-page flat rate the structure is
+# SIZED with — as the coupon, so the Coupon column on the Debt Structure tab
+# never reached the price.  A 2056 term at 6.250% / 6.625% off a 5.875% flat
+# rate priced at 90.334 instead of 95.167: a 4.8-point error on the OID, which
+# is a Source of Funds and therefore moves the reimbursement.
+#
+# Also make `coupon_for` respect term-bond membership.  The coupon is entered on
+# the term's FINAL maturity row, and `_schedule_lookup` carries forward, so an
+# installment inside a LATER term would otherwise pick up the earlier term's
+# coupon — wrong for pricing and for the interest `_apply_coupon_scale` derives.
+# Worth pushing back to co_metro_model.
+_p("debt_service.py", '''    def coupon_for(self, year: int) -> float:
+        """Coupon for a maturity — the per-maturity scale (carry-forward) or the flat rate."""
+        if self.coupon_scale:
+            from .config import _schedule_lookup
+            return _schedule_lookup(self.coupon_scale, year, self.rate)
+        return self.rate''',
+   '''    def coupon_for(self, year: int) -> float:
+        """
+        Coupon for a maturity — the per-maturity scale (carry-forward) or the
+        flat rate.
+
+        A term bond carries one coupon, entered on its FINAL maturity row, so an
+        installment inside a term looks that row up rather than carrying forward
+        from whatever precedes it.
+        """
+        if self.coupon_scale:
+            from .config import _schedule_lookup
+            term = self._term_for(year)
+            lookup_year = term[1] if term is not None else year
+            return _schedule_lookup(self.coupon_scale, lookup_year, self.rate)
+        return self.rate''')
+
+_p("debt_service.py", '''            maturity = date(last, self.prin_month, self.prin_day)
+            return price_to_worst(self.delivery, maturity, self.rate, ty,
+                                  self._call_scenarios())
+        maturity = date(year, self.prin_month, self.prin_day)
+        return price_to_worst(self.delivery, maturity, self.rate,
+                              self.yield_for(year), self._call_scenarios())''',
+   '''            maturity = date(last, self.prin_month, self.prin_day)
+            return price_to_worst(self.delivery, maturity, self.coupon_for(last), ty,
+                                  self._call_scenarios())
+        maturity = date(year, self.prin_month, self.prin_day)
+        return price_to_worst(self.delivery, maturity, self.coupon_for(year),
+                              self.yield_for(year), self._call_scenarios())''')
+
+
+
 # ── Stale Colorado vocabulary in docstrings / section comments ───────────────
 
 _p("memo.py", '''sources & uses), but states Colorado assumptions — mill levy (governing document cap +

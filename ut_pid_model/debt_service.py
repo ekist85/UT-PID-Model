@@ -126,10 +126,19 @@ class BondTranche:
     schedule: list[PaymentRow] = field(default_factory=list)
 
     def coupon_for(self, year: int) -> float:
-        """Coupon for a maturity — the per-maturity scale (carry-forward) or the flat rate."""
+        """
+        Coupon for a maturity — the per-maturity scale (carry-forward) or the
+        flat rate.
+
+        A term bond carries one coupon, entered on its FINAL maturity row, so an
+        installment inside a term looks that row up rather than carrying forward
+        from whatever precedes it.
+        """
         if self.coupon_scale:
             from .config import _schedule_lookup
-            return _schedule_lookup(self.coupon_scale, year, self.rate)
+            term = self._term_for(year)
+            lookup_year = term[1] if term is not None else year
+            return _schedule_lookup(self.coupon_scale, lookup_year, self.rate)
         return self.rate
 
     # ── Pricing (price / yield / premium-OID, priced to worst call) ──────────
@@ -184,10 +193,10 @@ class BondTranche:
         if term is not None:
             first, last, ty = term
             maturity = date(last, self.prin_month, self.prin_day)
-            return price_to_worst(self.delivery, maturity, self.rate, ty,
+            return price_to_worst(self.delivery, maturity, self.coupon_for(last), ty,
                                   self._call_scenarios())
         maturity = date(year, self.prin_month, self.prin_day)
-        return price_to_worst(self.delivery, maturity, self.rate,
+        return price_to_worst(self.delivery, maturity, self.coupon_for(year),
                               self.yield_for(year), self._call_scenarios())
 
     def premium_for(self, year: int, principal: float) -> float:

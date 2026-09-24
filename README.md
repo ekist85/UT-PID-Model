@@ -112,10 +112,18 @@ assessment on the same property is a statutory question this model has not
 worked through, and an untested toggle in a client-facing template is worse than
 no toggle. Turning it on is a one-line change once that authority is settled.
 
-Three upstream fixes ride in the patch set and are worth pushing back to
-`co_metro_model` (a fourth — flooring the solved subordinate par instead of
+Four upstream fixes ride in the patch set and are worth pushing back to
+`co_metro_model` (a fifth — flooring the solved subordinate par instead of
 rounding it — was adopted upstream in `ba72e6b`, so the patch is retired):
 
+* **Pricing uses the flat sizing rate as the coupon.** `BondTranche.price_for`
+  passes `self.rate` — the Inputs-page rate the structure is *sized* with — to
+  the pricing engine, so the Coupon column on the Debt Structure tab never
+  reaches the price. A 3/1/2056 term at 6.250% / 6.625% off a 5.875% flat rate
+  prices at 90.334 instead of 95.167: 4.8 points of OID, which is a Source of
+  Funds and moves the reimbursement. The port prices at `coupon_for(...)`, and
+  makes `coupon_for` respect term-bond membership so a later term does not
+  inherit an earlier term's coupon.
 * **The builder lot inventory build keys off home closings, not lot
   deliveries.** Upstream feeds the "Value of New Lots" column the value of lots
   *converting to homes* that year, so a builder holding delivered lots shows
