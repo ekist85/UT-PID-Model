@@ -2290,6 +2290,45 @@ def price_from_dated_date(dated: date, redemption_date: date, coupon: float,
 
 
 
+# DBC truncates the price to three decimals and computes the OID from the
+# TRUNCATED price, not the full-precision one: -348,373.60 is exactly
+# 7,180,000 x (95.148 - 100) / 100.  Truncate (not round) so the printed price
+# and the OID always agree, and so an entered price is used verbatim.
+_p("debt_service.py", '''        maturity = date(year, self.prin_month, self.prin_day)
+        return price_to_worst(self.delivery, maturity, self.coupon_for(year),
+                              self.yield_for(year), self._call_scenarios())''',
+   '''        maturity = date(year, self.prin_month, self.prin_day)
+        return _truncate3(price_to_worst(self.delivery, maturity, self.coupon_for(year),
+                                         self.yield_for(year), self._call_scenarios()))''')
+
+_p("debt_service.py", '''            return price_to_worst(self.delivery, maturity, self.coupon_for(last), ty,
+                                  self._call_scenarios())''',
+   '''            return _truncate3(price_to_worst(self.delivery, maturity,
+                                             self.coupon_for(last), ty,
+                                             self._call_scenarios()))''')
+
+_p("debt_service.py", '''def coupon_at(coupon_scale, term_bonds, rate: float, year: int) -> float:''',
+   '''def _truncate3(price: float) -> float:
+    """
+    Price truncated — not rounded — to three decimals.
+
+    The convention DBC prints and, more to the point, computes the OID from:
+    its -348,373.60 is exactly 7,180,000 x (95.148 - 100) / 100.  Truncating
+    here keeps the printed price and the premium/OID consistent, and leaves a
+    price entered to three decimals untouched.
+    """
+    from decimal import Decimal, ROUND_DOWN
+    # Clean floating-point noise before truncating.  A par bond's present value
+    # lands on 99.999999999999 as often as 100.0, and truncating THAT would
+    # invent a 0.001 discount on a bond reoffered at its coupon.
+    cleaned = round(price, 9)
+    return float(Decimal(str(cleaned)).quantize(Decimal("0.001"), rounding=ROUND_DOWN))
+
+
+def coupon_at(coupon_scale, term_bonds, rate: float, year: int) -> float:''')
+
+
+
 # ── Stale Colorado vocabulary in docstrings / section comments ───────────────
 
 _p("memo.py", '''sources & uses), but states Colorado assumptions — mill levy (governing document cap +

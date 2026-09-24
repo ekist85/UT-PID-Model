@@ -103,6 +103,23 @@ class PaymentRow:
         return self.gross_total - self.capitalized_interest - self.dsrf_earnings - self.surplus_release
 
 
+def _truncate3(price: float) -> float:
+    """
+    Price truncated — not rounded — to three decimals.
+
+    The convention DBC prints and, more to the point, computes the OID from:
+    its -348,373.60 is exactly 7,180,000 x (95.148 - 100) / 100.  Truncating
+    here keeps the printed price and the premium/OID consistent, and leaves a
+    price entered to three decimals untouched.
+    """
+    from decimal import Decimal, ROUND_DOWN
+    # Clean floating-point noise before truncating.  A par bond's present value
+    # lands on 99.999999999999 as often as 100.0, and truncating THAT would
+    # invent a 0.001 discount on a bond reoffered at its coupon.
+    cleaned = round(price, 9)
+    return float(Decimal(str(cleaned)).quantize(Decimal("0.001"), rounding=ROUND_DOWN))
+
+
 def coupon_at(coupon_scale, term_bonds, rate: float, year: int) -> float:
     """
     Coupon for a maturity, independent of any tranche — the sizer needs this
@@ -218,11 +235,12 @@ class BondTranche:
         if term is not None:
             first, last, ty = term
             maturity = date(last, self.prin_month, self.prin_day)
-            return price_to_worst(self.delivery, maturity, self.coupon_for(last), ty,
-                                  self._call_scenarios())
+            return _truncate3(price_to_worst(self.delivery, maturity,
+                                             self.coupon_for(last), ty,
+                                             self._call_scenarios()))
         maturity = date(year, self.prin_month, self.prin_day)
-        return price_to_worst(self.delivery, maturity, self.coupon_for(year),
-                              self.yield_for(year), self._call_scenarios())
+        return _truncate3(price_to_worst(self.delivery, maturity, self.coupon_for(year),
+                                         self.yield_for(year), self._call_scenarios()))
 
     def premium_for(self, year: int, principal: float) -> float:
         """Premium / (original-issue discount) on a maturity = (price − par) × principal."""

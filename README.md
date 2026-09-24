@@ -256,6 +256,10 @@ senior interest rate no longer affects the par** — it is only the fallback for
 blank sheet. On the reference deal a 6.250% scale sizes to $5,430,000 whether
 the Inputs rate says 4.000% or 8.000%, against $5,665,000 blank at 5.875%.
 
+Prices are **truncated to three decimals**, the convention DBC prints and
+computes its OID from, so the printed price and the premium/OID always agree and
+a price you enter to three decimals is used verbatim.
+
 Prices run through the existing price-to-worst engine, so a yield above the
 coupon prices at a discount — a single `2054 · 6.00% · 6.36% · Term` row on the
 reference deal sizes to $5,685,000 par with a $365,154 discount, against

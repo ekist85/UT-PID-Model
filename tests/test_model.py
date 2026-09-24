@@ -906,6 +906,30 @@ def _dbc_tranche(price_scale=None):
     return t
 
 
+def test_price_is_truncated_to_three_decimals():
+    """DBC prints the price to three decimals and computes the OID from the
+    TRUNCATED price — its -348,373.60 is exactly 7,180,000 x (95.148-100)/100.
+    Truncate, not round, so the printed price and the OID always agree."""
+    from ut_pid_model.debt_service import _truncate3
+    assert _truncate3(95.1715) == 95.171
+    assert _truncate3(95.1489999) == 95.148        # truncated, not rounded up
+    assert _truncate3(95.148) == 95.148            # an entered price is untouched
+    # Floating-point noise must not invent a discount on a par bond.
+    assert _truncate3(99.99999999999) == 100.0
+    assert _truncate3(100.00000000001) == 100.0
+
+
+def test_price_and_oid_always_agree():
+    """Whatever the price, the OID is that price applied to the principal —
+    no full-precision residue between what is printed and what is booked."""
+    t = _dbc_tranche()
+    price = t.price_for(2056)
+    assert price == pytest.approx(round(price, 3), abs=1e-12)
+    for year in (2032, 2040, 2056):
+        assert t.premium_for(year, DBC_2056A[year]) == pytest.approx(
+            (price / 100.0 - 1.0) * DBC_2056A[year], abs=1e-9)
+
+
 def test_entered_price_overrides_the_calculated_one():
     calc = _dbc_tranche().price_for(2056)
     entered = _dbc_tranche({2056: 95.148}).price_for(2056)
