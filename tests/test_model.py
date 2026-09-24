@@ -811,6 +811,40 @@ def test_debt_structure_tab_has_the_par_coupon_yield_type_columns(tmp_path):
                for dv in ws.data_validations.dataValidation)
 
 
+def test_debt_structure_number_formats_follow_the_columns(tmp_path):
+    """Par Amount moved the later columns one to the right; the dollar and
+    percent formats have to have moved with them."""
+    _p, _wb, ws, row_of = _debt_structure_sheet(tmp_path, "fmt.xlsx")
+    for year in (ModelConfig().senior_first_principal_year,
+                 ModelConfig().senior_final_year):
+        r = row_of(year)
+        fmts = {ws.cell(row=r, column=c).column_letter: ws.cell(row=r, column=c).number_format
+                for c in range(2, 7)}
+        assert fmts == {"B": "General",      # maturity year
+                        "C": "#,##0",        # par amount — dollars
+                        "D": "0.000%",       # coupon
+                        "E": "0.000%",       # yield
+                        "F": "General"}, fmts
+
+
+def test_debt_structure_scale_round_trips_through_the_sheet(tmp_path):
+    """Write a par / coupon / yield scale out and read it back unchanged — the
+    end-to-end check that values land in the columns the loader reads."""
+    from ut_pid_model import (load_inputs_workbook, write_inputs_workbook,
+                              viridian_farm_projections)
+    cfg = ModelConfig()
+    cfg.senior_par_schedule = {2052: 1_250_000.0, 2053: 1_250_000.0, 2054: 1_500_000.0}
+    cfg.senior_coupon_scale = {2052: 0.055, 2053: 0.0575, 2054: 0.06}
+    cfg.senior_yield_scale = {2052: 0.0525, 2053: 0.0550, 2054: 0.0636}
+    path = write_inputs_workbook(cfg, viridian_farm_projections(),
+                                 output_path=str(tmp_path / "rt.xlsx"))
+    back, _dev = load_inputs_workbook(path)
+    assert back.senior_par_schedule == cfg.senior_par_schedule
+    assert back.senior_coupon_scale == cfg.senior_coupon_scale
+    assert back.senior_yield_scale == cfg.senior_yield_scale
+    assert back.senior_term_bonds is None       # every row is a Serial
+
+
 def test_blank_debt_structure_is_preliminary_flat_rate_sizing(tmp_path):
     from ut_pid_model import load_inputs_workbook
     path, _wb, _ws, _row_of = _debt_structure_sheet(tmp_path, "blank.xlsx")
