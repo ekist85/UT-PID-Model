@@ -362,8 +362,12 @@ long-form prose dates, as a letter should.
   annual reassessment → adjustments → gross market value → taxable value).
   The Summary tabs and the bond sizing read from them, so the presentation and
   the arithmetic cannot disagree.
-* `… - Forecast Exhibits.xlsx` — CPA-style forecast exhibits for the base case
-  and two development stress scenarios:
+* `<m.d.yyyy> - Forecast Exhibits - <district> - <N> Lots - Tierra Financial
+  Advisors.xlsx` — CPA-style forecast exhibits for the base case and two
+  development stress scenarios. The exhibits are their own deliverable, not an
+  appendix to the reimbursement analysis, so the label sits where the model
+  view says `Reimbursement Analysis` — right after the date — rather than
+  trailing the name, and the reimbursement wording appears nowhere in the file:
   * **Exhibit A** — Base Case (100% of forecast absorption pace)
   * **Exhibit B** — Alternative Scenario (80% pace)
   * **Exhibit C** — Alternative Scenario (45% pace)

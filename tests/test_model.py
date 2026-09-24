@@ -586,8 +586,15 @@ def _deliverable(out, result, suffix=""):
     return out / f"{base}{suffix}"
 
 
+def _forecast(out, result):
+    """The exhibits carry their own label in place of 'Reimbursement Analysis'."""
+    from ut_pid_model import deliverable_basename
+    base = deliverable_basename(result["cfg"], lots=result["dev"].total_lots,
+                                label="Forecast Exhibits")
+    return out / f"{base}.xlsx"
+
+
 WORKBOOK = ".xlsx"
-FORECAST = " - Forecast Exhibits.xlsx"
 MEMO = " - Memo.html"
 
 
@@ -601,10 +608,29 @@ def test_workbook_has_the_colorado_model_tab_set(deliverables):
 def test_forecast_exhibits_cover_three_scenarios(deliverables):
     import openpyxl
     out, _r = deliverables
-    wb = openpyxl.load_workbook(_deliverable(out, _r, FORECAST))
+    wb = openpyxl.load_workbook(_forecast(out, _r))
     names = " ".join(wb.sheetnames)
     for prefix in ("A", "B", "C"):
         assert f"Exhibit {prefix}-1" in names or f"{prefix}-1" in names
+
+
+def test_forecast_exhibits_are_labelled_forecast_exhibits(deliverables):
+    """The exhibits read '<date> - Forecast Exhibits - <district> ...': the label
+    sits where the workbook says 'Reimbursement Analysis', not on the tail, and
+    that wording — like Colorado — appears nowhere inside."""
+    import openpyxl
+    import re
+    out, _r = deliverables
+    path = _forecast(out, _r)
+    assert re.match(r"^\d{1,2}\.\d{1,2}\.\d{4} - Forecast Exhibits - ", path.name), path.name
+    assert "Reimbursement Analysis" not in path.name
+    wb = openpyxl.load_workbook(path)
+    for ws in wb.worksheets:
+        for row in ws.iter_rows():
+            for cell in row:
+                text = str(cell.value or "")
+                for stale in ("Reimbursement Analysis", "COLORADO", "Colorado"):
+                    assert stale not in text, f"{ws.title}!{cell.coordinate}: {text}"
 
 
 def test_memo_states_the_utah_framework(deliverables):
@@ -818,7 +844,7 @@ def test_every_excel_date_uses_the_m_d_yyyy_format(deliverables, tmp_path):
     import openpyxl
     from ut_pid_model import write_inputs_workbook
     out, _r = deliverables
-    paths = [_deliverable(out, _r, WORKBOOK), _deliverable(out, _r, FORECAST),
+    paths = [_deliverable(out, _r, WORKBOOK), _forecast(out, _r),
              tmp_path / "inputs.xlsx"]
     write_inputs_workbook(output_path=str(paths[-1]))
     seen = 0

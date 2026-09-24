@@ -247,8 +247,11 @@ def run_model(export: bool = True, output_dir: str | None = None,
         # Forecast exhibits — base case + development stress scenarios (80%/45%).
         scenarios = build_scenarios(cfg, dev, stress_pace_factors=(0.80, 0.45),
                                     sub_par=sub_par)
+        exhibits_base = deliverable_basename(
+            cfg, lots=(dev.total_lots if dev is not None else None),
+            label="Forecast Exhibits")
         forecast_xlsx = build_forecast_report(
-            scenarios, output_path=f"{output_dir}/{base} - Forecast Exhibits.xlsx")
+            scenarios, output_path=f"{output_dir}/{exhibits_base}.xlsx")
         # Tierra-style reimbursement memo (HTML), populated from the model.
         memo_html = build_memo_html(
             cfg, sm, senior, su, sub, refunding, dev=dev,

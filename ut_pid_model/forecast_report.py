@@ -61,7 +61,7 @@ def _exhibit_header(ws, exhibit_no, cfg, schedule_title, last_col, scenario_labe
     titles = [
         f"EXHIBIT {exhibit_no}",
         cfg.pid_name.upper(),
-        f"IN {cfg.county.upper()} COUNTY, COLORADO",
+        f"IN {cfg.county.upper()} COUNTY, UTAH",
         "FORECAST OF CASH BALANCES AND CASH RECEIPTS AND DISBURSEMENTS",
         "FOR DEBT SERVICE FUND ONLY",
         schedule_title.upper(),

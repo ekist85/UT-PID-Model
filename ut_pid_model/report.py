@@ -242,18 +242,20 @@ def _brand_line(cfg, lots=None) -> str:
         "Tierra Financial Advisors"] if x)
 
 
-def deliverable_basename(cfg, lots=None) -> str:
+def deliverable_basename(cfg, lots=None, label: str = "Reimbursement Analysis") -> str:
     """
-    Filesystem-safe base name for the deliverables, in the requested title order:
-    ``<today> - Reimbursement Analysis - <district> - <N> Lots - Tierra Financial
-    Advisors``.  A per-file descriptor (Memo / Forecast Exhibits) is appended by
-    the caller to distinguish the three outputs.
+    Filesystem-safe base name for a deliverable, in the requested title order:
+    ``<today> - <label> - <district> - <N> Lots - Tierra Financial Advisors``.
+
+    ``label`` names what the file IS, and sits right after the date: the model
+    workbook and the memo are a Reimbursement Analysis, the forecast exhibits
+    are Forecast Exhibits.
     """
     import re
     if lots is None:
         lots = getattr(cfg, "_doc_lots", None)
-    parts = [_today_file_str(), "Reimbursement Analysis",
-             cfg.pid_name or "Colorado Metro District"]
+    parts = [_today_file_str(), label,
+             cfg.pid_name or "Utah Public Infrastructure District"]
     if lots:
         parts.append(f"{lots:,} Lots")
     parts.append("Tierra Financial Advisors")

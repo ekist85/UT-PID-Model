@@ -2586,6 +2586,53 @@ _p("report.py", '''    final_mat = max((p.payment_date for p in rb.schedule), de
 
 
 
+# ── Exhibits are named for what they are, and the county line says Utah ─────
+# The forecast exhibits are not a reimbursement analysis, so "Forecast
+# Exhibits" takes the slot after the date rather than trailing behind the whole
+# name.  deliverable_basename grows a `label` for it; the workbook and the memo
+# keep "Reimbursement Analysis", which is what they are.
+#
+# And the exhibit header said "IN <county> COUNTY, COLORADO" on all 27 sheets.
+_p("report.py", '''def deliverable_basename(cfg, lots=None) -> str:
+    """
+    Filesystem-safe base name for the deliverables, in the requested title order:
+    ``<today> - Reimbursement Analysis - <district> - <N> Lots - Tierra Financial
+    Advisors``.  A per-file descriptor (Memo / Forecast Exhibits) is appended by
+    the caller to distinguish the three outputs.
+    """
+    import re
+    if lots is None:
+        lots = getattr(cfg, "_doc_lots", None)
+    parts = [_today_file_str(), "Reimbursement Analysis",
+             cfg.pid_name or "Colorado Metro District"]''',
+   '''def deliverable_basename(cfg, lots=None, label: str = "Reimbursement Analysis") -> str:
+    """
+    Filesystem-safe base name for a deliverable, in the requested title order:
+    ``<today> - <label> - <district> - <N> Lots - Tierra Financial Advisors``.
+
+    ``label`` names what the file IS, and sits right after the date: the model
+    workbook and the memo are a Reimbursement Analysis, the forecast exhibits
+    are Forecast Exhibits.
+    """
+    import re
+    if lots is None:
+        lots = getattr(cfg, "_doc_lots", None)
+    parts = [_today_file_str(), label,
+             cfg.pid_name or "Utah Public Infrastructure District"]''')
+
+_p("main.py", '''        forecast_xlsx = build_forecast_report(
+            scenarios, output_path=f"{output_dir}/{base} - Forecast Exhibits.xlsx")''',
+   '''        exhibits_base = deliverable_basename(
+            cfg, lots=(dev.total_lots if dev is not None else None),
+            label="Forecast Exhibits")
+        forecast_xlsx = build_forecast_report(
+            scenarios, output_path=f"{output_dir}/{exhibits_base}.xlsx")''')
+
+_p("forecast_report.py", '''        f"IN {cfg.county.upper()} COUNTY, COLORADO",''',
+   '''        f"IN {cfg.county.upper()} COUNTY, UTAH",''')
+
+
+
 # ── Stale Colorado vocabulary in docstrings / section comments ───────────────
 
 _p("memo.py", '''sources & uses), but states Colorado assumptions — mill levy (governing document cap +
