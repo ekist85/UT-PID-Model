@@ -130,13 +130,13 @@ LABEL_SUBS = [
     ("OM_CARVEOUT_AV_LIMIT", "OM_EXPENSE_AV_LIMIT"),
     ("OM_CARVEOUT", "OM_EXPENSE"),
     ("STRICT_BIENNIAL_AV", "HOLD_VALUE_FLAT"),
-    # Excel date format — yyyy.m.d throughout the workbook (number formats and
+    # Excel date format — m/d/yyyy throughout the workbook (number formats and
     # the one place the format string is compared for alignment).
-    ('fmt="MM/DD/YYYY"', 'fmt="yyyy.m.d"'),
-    ("DATEFMT = 'mm/dd/yyyy'", "DATEFMT = 'yyyy.m.d'"),
-    ("fmt == 'mm/dd/yyyy'", "fmt == 'yyyy.m.d'"),
-    ("_DATEFMT = 'YYYY-MM-DD'", "_DATEFMT = 'yyyy.m.d'"),          # inputs template
-    ('p.payment_date, "DD-MMM-YY"', 'p.payment_date, "yyyy.m.d"'),  # forecast exhibits
+    ('fmt="MM/DD/YYYY"', 'fmt="m/d/yyyy"'),
+    ("DATEFMT = 'mm/dd/yyyy'", "DATEFMT = 'm/d/yyyy'"),
+    ("fmt == 'mm/dd/yyyy'", "fmt == 'm/d/yyyy'"),
+    ("_DATEFMT = 'YYYY-MM-DD'", "_DATEFMT = 'm/d/yyyy'"),          # inputs template
+    ('p.payment_date, "DD-MMM-YY"', 'p.payment_date, "m/d/yyyy"'),  # forecast exhibits
     ("Schedule of Estimated Assessed Valuation", "Schedule of Estimated Taxable Value"),
     ("Summary of Assessed Values and Net Tax Revenues",
      "Summary of Taxable Values and Net Tax Revenues"),
@@ -1478,10 +1478,15 @@ _p("inputs.py", '''        type="list", formula1='"Senior,Subordinate,Series C,P
 
 
 
-# ── Dates read yyyy.m.d across the Excel output ──────────────────────────────
+# ── Dates read m/d/yyyy across the Excel output ──────────────────────────────
 # The number formats are handled in the label pass; these are the dates rendered
-# as text — the title band on every tab (and, through deliverable_basename, the
-# file names) and the prose subtitles on the CAPI and Call Schedule sheets.
+# as text — the title band on every tab and the prose subtitles on the CAPI and
+# Call Schedule sheets.
+#
+# File names are the exception: m/d/yyyy contains path separators, and
+# deliverable_basename strips them, which would turn 9/24/2026 into "9242026".
+# Saved files therefore carry m.d.yyyy, the same substitution Colorado settled on
+# in fd4a687.
 _p("report.py", '''def _today_str() -> str:
     from datetime import date as _dt
     _t = _dt.today()
@@ -1492,13 +1497,31 @@ _p("report.py", '''def _today_str() -> str:
 
 
 def _d(d) -> str:
-    """A date as yyyy.m.d — the workbook's date format, unpadded."""
-    return f"{d.year}.{d.month}.{d.day}"
+    """A date as m/d/yyyy — the workbook's date format, unpadded."""
+    return f"{d.month}/{d.day}/{d.year}"
+
+
+def _d_file(d) -> str:
+    """
+    A date for a FILE NAME — m.d.yyyy.
+
+    m/d/yyyy carries path separators, and deliverable_basename strips the
+    characters a filesystem will not take, which would leave "9242026".
+    """
+    return f"{d.month}.{d.day}.{d.year}"
+
+
+def _today_file_str() -> str:
+    from datetime import date as _dt
+    return _d_file(_dt.today())
 
 
 def _ym(d) -> str:
-    """A month as yyyy.m."""
-    return f"{d.year}.{d.month}"''')
+    """A month as m/yyyy."""
+    return f"{d.month}/{d.year}"''')
+
+_p("report.py", '''    parts = [_today_str(), "Reimbursement Analysis",''',
+   '''    parts = [_today_file_str(), "Reimbursement Analysis",''')
 
 _p("report.py", '''                f"{cfg.capi_end_date:%b %Y}; balance earns {cfg.interest_earn_rate:.2%}/yr"], 6)''',
    '''                f"{_ym(cfg.capi_end_date)}; balance earns {cfg.interest_earn_rate:.2%}/yr"], 6)''')

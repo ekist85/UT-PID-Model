@@ -737,8 +737,8 @@ def test_no_colorado_identifiers_survive_in_the_package():
     assert not offenders, offenders
 
 
-def test_every_excel_date_uses_the_yyyy_m_d_format(deliverables, tmp_path):
-    """Dates read yyyy.m.d everywhere in the Excel output — every date-valued
+def test_every_excel_date_uses_the_m_d_yyyy_format(deliverables, tmp_path):
+    """Dates read m/d/yyyy everywhere in the Excel output — every date-valued
     cell in the model workbook, the forecast exhibits and the inputs template."""
     import datetime
     import openpyxl
@@ -755,18 +755,21 @@ def test_every_excel_date_uses_the_yyyy_m_d_format(deliverables, tmp_path):
                 for cell in row:
                     if isinstance(cell.value, (datetime.datetime, datetime.date)):
                         seen += 1
-                        assert cell.number_format == "yyyy.m.d", (
+                        assert cell.number_format == "m/d/yyyy", (
                             f"{path.name}:{ws.title}!{cell.coordinate} "
                             f"= {cell.number_format}")
     assert seen > 100, seen
 
 
-def test_title_band_and_file_names_carry_the_same_date_format(deliverables):
+def test_title_band_reads_m_d_yyyy_and_file_names_stay_filesystem_safe(deliverables):
+    """The title band reads m/d/yyyy; file names carry the same date as m.d.yyyy,
+    because a slash is a path separator and would be stripped out entirely."""
     import openpyxl
     import re
     out, _r = deliverables
     path = _deliverable(out, _r, WORKBOOK)
-    assert re.match(r"^\d{4}\.\d{1,2}\.\d{1,2} - ", path.name), path.name
+    assert re.match(r"^\d{1,2}\.\d{1,2}\.\d{4} - ", path.name), path.name
+    assert "/" not in path.name
     wb = openpyxl.load_workbook(path)
     banded = 0
     for ws in wb.worksheets:
@@ -776,7 +779,7 @@ def test_title_band_and_file_names_carry_the_same_date_format(deliverables):
                 "Reimbursement Analysis"):
             continue
         banded += 1
-        assert re.fullmatch(r"\d{4}\.\d{1,2}\.\d{1,2}",
+        assert re.fullmatch(r"\d{1,2}/\d{1,2}/\d{4}",
                             str(ws.cell(row=1, column=1).value)), ws.title
     assert banded >= 14, banded
 
