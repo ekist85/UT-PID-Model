@@ -212,8 +212,9 @@ python -c "import main; main.run_model(inputs_path='my_inputs.xlsx')"
 
 ### The Debt Structure tab
 
-One row per maturity, five columns — **Maturity Year | Par Amount | Coupon |
-Yield | Type (Serial/Term)** — for the senior bonds and again for the refunding:
+One row per maturity, six columns — **Maturity Year | Par Amount | Coupon |
+Yield | Type (Serial/Term) | Price** — for the senior bonds and again for the
+refunding:
 
 * **Leave it blank** for preliminary work. Sizing runs off the single flat rate
   on the Inputs page, exactly as before.
@@ -223,6 +224,13 @@ Yield | Type (Serial/Term)** — for the senior bonds and again for the refundin
   `Term`. Everything up to that maturity amortizes into it at that coupon and
   yield. A single Term row therefore makes the whole structure one amortizing
   term bond. Consecutive Term rows define successive terms.
+* **Price** is optional and sits in the last column, after Type. Leave it blank
+  and the model computes the price from the coupon and yield; enter the
+  underwriter's price (e.g. `95.148`) and **that price governs the OID
+  outright**. Use it whenever you have a pricing run in hand — it removes any
+  first-period convention difference between this model and the underwriter's
+  program. Entering DBC's 95.148 on Viridian Farm PID No. 2 reproduces its
+  −$348,373.60 of OID to the cent, maturity by maturity.
 * One filled Coupon row sets the coupon for **every** maturity (the lookup
   carries to the nearest entered row), and a Coupon with no Yield prices off the
   Inputs rate — fill Yield alongside Coupon.

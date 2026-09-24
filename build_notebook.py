@@ -201,6 +201,7 @@ senior = size_senior_with_dynamic_dsrf(
     coupon_scale=cfg.senior_coupon_scale, yield_scale=cfg.senior_yield_scale,
     term_bonds=cfg.senior_term_bonds,
     par_schedule=cfg.senior_par_schedule,
+    price_scale=cfg.senior_price_scale,
 )
 print(f"Sized senior par: ${senior.par_amount:,.0f}   "
       f"DSRF (3-prong): ${senior.dsrf_deposit:,.0f}")

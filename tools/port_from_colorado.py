@@ -1912,6 +1912,184 @@ def clean_price(settlement: date, redemption_date: date, coupon: float, ytm: flo
 
 
 
+# ── Debt Structure: an entered Price overrides the calculated one ────────────
+# The model's price agrees with DBC on convention — a bond reoffered at its
+# coupon prices at exactly 100 on an off-cycle dated date, which Excel's clean
+# PRICE() does not — but the two differ by ~0.024 on a long discount term bond
+# because of the odd first period (9/30/2026 dated, first coupon 3/1/2027).
+# On $7.18MM that is ~$1,700 of OID.
+#
+# On pricing day the underwriter's price is the price.  Column G takes it, and
+# it overrides the calculation outright.  Added at the END so B-F keep their
+# meaning — the tab has already moved its columns once.
+_p("config.py", '''    senior_par_schedule: Optional[dict] = None          # {maturity_year: par} — manual amortization override''',
+   '''    senior_par_schedule: Optional[dict] = None          # {maturity_year: par} — manual amortization override
+    senior_price_scale: Optional[dict] = None          # {maturity_year: price per 100} — entered, overrides the calc''')
+
+_p("config.py", '''    senior_refunding_par_schedule: Optional[dict] = None''',
+   '''    senior_refunding_par_schedule: Optional[dict] = None
+    senior_refunding_price_scale: Optional[dict] = None''')
+
+_p("debt_service.py", '''    term_bonds: Optional[list] = None            # [(first_year, last_year, term_yield), ...]''',
+   '''    term_bonds: Optional[list] = None            # [(first_year, last_year, term_yield), ...]
+    price_scale: Optional[dict] = None           # {maturity_year: price} — entered on pricing day''')
+
+_p("debt_service.py", '''        from .pricing import price_to_worst
+        term = self._term_for(year)
+        if term is not None:
+            first, last, ty = term''',
+   '''        from .pricing import price_to_worst
+        term = self._term_for(year)
+        # An entered price is the price — on pricing day the underwriter's
+        # number governs, not a convention.  A term bond carries the price on
+        # its FINAL maturity row, as it carries the coupon and the yield.
+        if self.price_scale:
+            keyed = term[1] if term is not None else year
+            if keyed in self.price_scale:
+                return float(self.price_scale[keyed])
+            if year in self.price_scale:
+                return float(self.price_scale[year])
+        if term is not None:
+            first, last, ty = term''')
+
+# inputs.py — write and read the Price column.
+_p("inputs.py", '''    for col in "BCDEF":
+        ws.column_dimensions[col].width = 18
+    ws.merge_cells("B1:F1")''',
+   '''    for col in "BCDEFG":
+        ws.column_dimensions[col].width = 18
+    ws.merge_cells("B1:G1")''')
+
+_p("inputs.py", '''    ws.merge_cells("B2:F2")''', '''    ws.merge_cells("B2:G2")''')
+
+_p("inputs.py", '''        "structure one amortizing term bond priced to that maturity. Prices run to worst call.")''',
+   '''        "structure one amortizing term bond priced to that maturity. Prices run to worst call. "
+        "Price is optional: leave it blank and the model computes it from the coupon and yield; "
+        "enter the underwriter's price (e.g. 95.148) and that price governs the OID outright.")''')
+
+_p("inputs.py", '''        ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=6)''',
+   '''        ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=7)''')
+
+_p("inputs.py", '''        for i, h in enumerate(["Maturity Year", "Par Amount", "Coupon", "Yield", "Type (Serial/Term)"]):''',
+   '''        for i, h in enumerate(["Maturity Year", "Par Amount", "Coupon", "Yield",
+                               "Type (Serial/Term)", "Price (optional)"]):''')
+
+_p("inputs.py", '''    def _block(r, marker, years, coupon_scale, yield_scale, term_bonds, par_schedule):''',
+   '''    def _block(r, marker, years, coupon_scale, yield_scale, term_bonds, par_schedule,
+               price_scale=None):''')
+
+_p("inputs.py", '''            vals = [y, par, cpn, yld, typ]
+            for i in range(5):
+                cell = ws.cell(row=r, column=2 + i)
+                if vals[i] is not None:
+                    cell.value = vals[i]
+                cell.fill = _INPUT; cell.border = _BORDER; cell.alignment = _C
+                if i == 1:
+                    cell.number_format = _DOLLAR
+                if i in (2, 3):
+                    cell.number_format = _PCT''',
+   '''            vals = [y, par, cpn, yld, typ, (price_scale or {}).get(y)]
+            for i in range(6):
+                cell = ws.cell(row=r, column=2 + i)
+                if vals[i] is not None:
+                    cell.value = vals[i]
+                cell.fill = _INPUT; cell.border = _BORDER; cell.alignment = _C
+                if i == 1:
+                    cell.number_format = _DOLLAR
+                if i in (2, 3):
+                    cell.number_format = _PCT
+                if i == 5:
+                    cell.number_format = "0.000"''')
+
+_p("inputs.py", '''    r = _block(4, "SENIOR BONDS", senior_years, cfg.senior_coupon_scale,
+               cfg.senior_yield_scale, cfg.senior_term_bonds, cfg.senior_par_schedule)''',
+   '''    r = _block(4, "SENIOR BONDS", senior_years, cfg.senior_coupon_scale,
+               cfg.senior_yield_scale, cfg.senior_term_bonds, cfg.senior_par_schedule,
+               cfg.senior_price_scale)''')
+
+_p("inputs.py", '''    _block(r, "REFUNDING BONDS", ref_years, cfg.senior_refunding_coupon_scale,
+           cfg.senior_refunding_yield_scale, cfg.senior_refunding_term_bonds,
+           cfg.senior_refunding_par_schedule)''',
+   '''    _block(r, "REFUNDING BONDS", ref_years, cfg.senior_refunding_coupon_scale,
+           cfg.senior_refunding_yield_scale, cfg.senior_refunding_term_bonds,
+           cfg.senior_refunding_par_schedule, cfg.senior_refunding_price_scale)''')
+
+_p("inputs.py", '''                rows.append((int(y),
+                             _num(ds.cell(row=r, column=3).value),   # par
+                             _num(ds.cell(row=r, column=4).value),   # coupon
+                             _num(ds.cell(row=r, column=5).value),   # yield
+                             ds.cell(row=r, column=6).value))        # type''',
+   '''                rows.append((int(y),
+                             _num(ds.cell(row=r, column=3).value),   # par
+                             _num(ds.cell(row=r, column=4).value),   # coupon
+                             _num(ds.cell(row=r, column=5).value),   # yield
+                             ds.cell(row=r, column=6).value,         # type
+                             _num(ds.cell(row=r, column=7).value)))  # price''')
+
+_p("inputs.py", '''        for _y, _par, _cpn, _yld, _typ in rows:''',
+   '''        for _y, _par, _cpn, _yld, _typ, _prc in rows:''')
+
+_p("inputs.py", '''        coupon = {y: c for y, p, c, yl, t in rows if c is not None}
+        par = {y: p for y, p, c, yl, t in rows if p is not None}
+        yield_of = {y: yl for y, p, c, yl, t in rows}''',
+   '''        coupon = {y: c for y, p, c, yl, t, pr in rows if c is not None}
+        par = {y: p for y, p, c, yl, t, pr in rows if p is not None}
+        price = {y: pr for y, p, c, yl, t, pr in rows if pr is not None}
+        yield_of = {y: yl for y, p, c, yl, t, pr in rows}''')
+
+_p("inputs.py", '''        for f in sorted(y for y, p, c, yl, t in rows if _is_term(t)):''',
+   '''        for f in sorted(y for y, p, c, yl, t, pr in rows if _is_term(t)):''')
+
+_p("inputs.py", '''        serial_yield = {y: yl for y, p, c, yl, t in rows
+                        if yl is not None and y not in covered and not _is_term(t)}
+        return {"coupon": coupon or None, "yield": serial_yield or None,
+                "term": term_bonds or None, "par": par or None}''',
+   '''        serial_yield = {y: yl for y, p, c, yl, t, pr in rows
+                        if yl is not None and y not in covered and not _is_term(t)}
+        return {"coupon": coupon or None, "yield": serial_yield or None,
+                "term": term_bonds or None, "par": par or None,
+                "price": price or None}''')
+
+_p("inputs.py", '''        if block.get("par"):
+            out[f"{pre}_par_schedule"] = block["par"]''',
+   '''        if block.get("par"):
+            out[f"{pre}_par_schedule"] = block["par"]
+        if block.get("price"):
+            out[f"{pre}_price_scale"] = block["price"]''')
+
+
+
+# Thread the entered price through the sizer and every call site.
+_p("debt_service.py", '''        par_schedule: Optional[dict] = None,
+    ) -> BondTranche:''',
+   '''        par_schedule: Optional[dict] = None,
+        price_scale: Optional[dict] = None,
+    ) -> BondTranche:''')
+
+_p("debt_service.py", '''            coupon_scale=coupon_scale, yield_scale=yield_scale, term_bonds=term_bonds,
+        )''',
+   '''            coupon_scale=coupon_scale, yield_scale=yield_scale, term_bonds=term_bonds,
+            price_scale=price_scale,
+        )''')
+
+_p("refunding.py", '''            par_schedule=cfg.senior_refunding_par_schedule,''',
+   '''            par_schedule=cfg.senior_refunding_par_schedule,
+            price_scale=cfg.senior_refunding_price_scale,''')
+
+_p("scenarios.py", '''                par_schedule=cfg.senior_par_schedule,''',
+   '''                par_schedule=cfg.senior_par_schedule,
+                price_scale=cfg.senior_price_scale,''')
+
+_p("main.py", '''        par_schedule=cfg.senior_par_schedule,''',
+   '''        par_schedule=cfg.senior_par_schedule,
+        price_scale=cfg.senior_price_scale,''')
+
+_p("build_notebook.py", '''    par_schedule=cfg.senior_par_schedule,''',
+   '''    par_schedule=cfg.senior_par_schedule,
+    price_scale=cfg.senior_price_scale,''')
+
+
+
 # ── Stale Colorado vocabulary in docstrings / section comments ───────────────
 
 _p("memo.py", '''sources & uses), but states Colorado assumptions — mill levy (governing document cap +

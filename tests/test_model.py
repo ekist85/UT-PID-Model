@@ -848,6 +848,73 @@ def _priced_tranche(coupon_scale, term_bonds, yield_scale=None):
         coupon_scale=coupon_scale, yield_scale=yield_scale, term_bonds=term_bonds)
 
 
+DBC_2056A = {2032: 35_000, 2033: 80_000, 2034: 90_000, 2035: 100_000, 2036: 110_000,
+             2037: 125_000, 2038: 135_000, 2039: 150_000, 2040: 165_000, 2041: 180_000,
+             2042: 195_000, 2043: 215_000, 2044: 230_000, 2045: 250_000, 2046: 270_000,
+             2047: 295_000, 2048: 320_000, 2049: 345_000, 2050: 370_000, 2051: 400_000,
+             2052: 430_000, 2053: 460_000, 2054: 500_000, 2055: 535_000, 2056: 1_195_000}
+
+
+def _dbc_tranche(price_scale=None):
+    """Viridian Farm PID No. 2, 2056A term bond, as DBC sized and priced it."""
+    from ut_pid_model.debt_service import BondTranche, PaymentRow, SeniorLienSizer
+    par = sum(DBC_2056A.values())
+    t = BondTranche(name="2056A", rate=0.0625, coverage=1.30, delivery=date(2026, 9, 30),
+                    first_principal_year=2032, final_year=2056, prin_month=3, prin_day=1,
+                    capi_end_year=None, dsrf_deposit=0.0, dsrf_earn_rate=0.0,
+                    par_amount=par,
+                    call_provisions=CallProvisions(date(2031, 3, 1), None, 103.0),
+                    coupon_scale={2056: 0.0625}, term_bonds=[(2032, 2056, 0.06625)],
+                    price_scale=price_scale)
+    t.schedule = [PaymentRow(payment_date=date(y, m, 1),
+                             principal=(DBC_2056A.get(y, 0.0) if m == 3 else 0.0),
+                             interest=0.0, capitalized_interest=0.0,
+                             dsrf_earnings=0.0, surplus_release=0.0)
+                  for y in range(2027, 2057) for m in (3, 9)]
+    SeniorLienSizer._apply_coupon_scale(t, None)
+    return t
+
+
+def test_entered_price_overrides_the_calculated_one():
+    calc = _dbc_tranche().price_for(2056)
+    entered = _dbc_tranche({2056: 95.148}).price_for(2056)
+    assert entered == pytest.approx(95.148)
+    assert calc != pytest.approx(95.148, abs=1e-4)
+    # A term bond carries the entered price on every one of its installments.
+    assert _dbc_tranche({2056: 95.148}).price_for(2040) == pytest.approx(95.148)
+
+
+def test_entered_price_reproduces_the_dbc_oid_exactly():
+    """With DBC's price entered, every maturity's OID matches DBC to the cent."""
+    t = _dbc_tranche({2056: 95.148})
+    expected = {2032: -1_698.20, 2033: -3_881.60, 2040: -8_005.80, 2056: -57_981.40}
+    for year, oid in expected.items():
+        assert t.premium_for(year, DBC_2056A[year]) == pytest.approx(oid, abs=0.01)
+    assert t.total_premium == pytest.approx(-348_373.60, abs=0.01)
+
+
+def test_price_column_is_appended_so_the_other_columns_do_not_move(tmp_path):
+    _p, _wb, ws, row_of = _debt_structure_sheet(tmp_path, "price_col.xlsx")
+    hdr = row_of(ModelConfig().senior_first_principal_year) - 1
+    assert [ws.cell(row=hdr, column=c).value for c in range(2, 8)] == [
+        "Maturity Year", "Par Amount", "Coupon", "Yield",
+        "Type (Serial/Term)", "Price (optional)"]
+
+
+def test_entered_price_round_trips_through_the_sheet(tmp_path):
+    from ut_pid_model import load_inputs_workbook
+    cfg0 = ModelConfig()
+    path, wb, ws, row_of = _debt_structure_sheet(tmp_path, "price_rt.xlsx")
+    r = row_of(cfg0.senior_final_year)
+    ws.cell(row=r, column=4).value = 0.0625
+    ws.cell(row=r, column=5).value = 0.06625
+    ws.cell(row=r, column=6).value = "Term"
+    ws.cell(row=r, column=7).value = 95.148
+    wb.save(path)
+    cfg, _dev = load_inputs_workbook(path)
+    assert cfg.senior_price_scale == {cfg0.senior_final_year: 95.148}
+
+
 def test_period_count_is_day_accurate():
     """The dated date's DAY was discarded — 5 July and 31 July priced alike."""
     from ut_pid_model.pricing import semiannual_periods

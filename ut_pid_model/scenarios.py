@@ -99,6 +99,7 @@ def build_scenarios(
                 yield_scale=cfg.senior_yield_scale,
                 term_bonds=cfg.senior_term_bonds,
                 par_schedule=cfg.senior_par_schedule,
+                price_scale=cfg.senior_price_scale,
             )
             sizer = SeniorLienSizer(cfg, sm)
             senior = (size_senior_with_dynamic_dsrf(sizer, **size_kwargs)

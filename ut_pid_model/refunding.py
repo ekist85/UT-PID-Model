@@ -132,6 +132,7 @@ class RefundingAnalysis:
             yield_scale=cfg.senior_refunding_yield_scale,
             term_bonds=cfg.senior_refunding_term_bonds,
             par_schedule=cfg.senior_refunding_par_schedule,
+            price_scale=cfg.senior_refunding_price_scale,
         )
 
         # ── Subordinate lien for the refunding — EXACTLY the same methodology as

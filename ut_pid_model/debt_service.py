@@ -143,6 +143,7 @@ class BondTranche:
     coupon_scale: Optional[dict] = None          # {maturity_year: coupon} (pricing day; else flat rate)
     yield_scale: Optional[dict] = None           # {maturity_year: yield} curve (overrides flat)
     term_bonds: Optional[list] = None            # [(first_year, last_year, term_yield), ...]
+    price_scale: Optional[dict] = None           # {maturity_year: price} — entered on pricing day
     schedule: list[PaymentRow] = field(default_factory=list)
 
     def coupon_for(self, year: int) -> float:
@@ -205,6 +206,15 @@ class BondTranche:
         """
         from .pricing import price_to_worst
         term = self._term_for(year)
+        # An entered price is the price — on pricing day the underwriter's
+        # number governs, not a convention.  A term bond carries the price on
+        # its FINAL maturity row, as it carries the coupon and the yield.
+        if self.price_scale:
+            keyed = term[1] if term is not None else year
+            if keyed in self.price_scale:
+                return float(self.price_scale[keyed])
+            if year in self.price_scale:
+                return float(self.price_scale[year])
         if term is not None:
             first, last, ty = term
             maturity = date(last, self.prin_month, self.prin_day)
@@ -302,6 +312,7 @@ class SeniorLienSizer:
         yield_scale: Optional[dict] = None,
         term_bonds: Optional[list] = None,
         par_schedule: Optional[dict] = None,
+        price_scale: Optional[dict] = None,
     ) -> BondTranche:
         cfg = self.cfg
         dsrf_earn = dsrf_deposit * cfg.interest_earn_rate
@@ -422,6 +433,7 @@ class SeniorLienSizer:
             dsrf_earn_rate=cfg.interest_earn_rate, par_amount=par,
             call_provisions=call_provisions, reoffering_yield=reoffering_yield,
             coupon_scale=coupon_scale, yield_scale=yield_scale, term_bonds=term_bonds,
+            price_scale=price_scale,
         )
         tranche.schedule = self._build_schedule(tranche, principals, release_surplus)
         if coupon_scale:
