@@ -781,6 +781,105 @@ def test_title_band_and_file_names_carry_the_same_date_format(deliverables):
     assert banded >= 14, banded
 
 
+# ── Debt Structure tab (per-maturity par / coupon / yield, serial|term) ──────
+
+def _debt_structure_sheet(tmp_path, name="ds.xlsx"):
+    """A fresh inputs workbook plus a helper that finds a senior maturity row."""
+    import openpyxl
+    from ut_pid_model import write_inputs_workbook
+    path = write_inputs_workbook(output_path=str(tmp_path / name))
+    wb = openpyxl.load_workbook(path)
+    ws = wb["Debt Structure"]
+    start = next(r for r in range(1, ws.max_row + 1)
+                 if str(ws.cell(row=r, column=2).value or "").upper().startswith("SENIOR BONDS"))
+
+    def row_of(year):
+        for r in range(start + 2, ws.max_row + 1):
+            if ws.cell(row=r, column=2).value == year:
+                return r
+        raise AssertionError(f"no senior row for {year}")
+    return path, wb, ws, row_of
+
+
+def test_debt_structure_tab_has_the_par_coupon_yield_type_columns(tmp_path):
+    _p, _wb, ws, row_of = _debt_structure_sheet(tmp_path)
+    hdr_row = row_of(ModelConfig().senior_first_principal_year) - 1
+    assert [ws.cell(row=hdr_row, column=c).value for c in range(2, 7)] == [
+        "Maturity Year", "Par Amount", "Coupon", "Yield", "Type (Serial/Term)"]
+    # The Type column is a Serial/Term dropdown.
+    assert any('"Serial,Term"' in (dv.formula1 or "")
+               for dv in ws.data_validations.dataValidation)
+
+
+def test_blank_debt_structure_is_preliminary_flat_rate_sizing(tmp_path):
+    from ut_pid_model import load_inputs_workbook
+    path, _wb, _ws, _row_of = _debt_structure_sheet(tmp_path, "blank.xlsx")
+    cfg, _dev = load_inputs_workbook(path)
+    assert cfg.senior_coupon_scale is None
+    assert cfg.senior_yield_scale is None
+    assert cfg.senior_term_bonds is None
+    assert cfg.senior_par_schedule is None
+
+
+def test_one_term_row_makes_the_whole_structure_a_term_bond(tmp_path):
+    """A single Term row at the final maturity spans first principal year → that
+    maturity, and a yield above the coupon prices at a discount."""
+    from ut_pid_model import load_inputs_workbook
+    cfg0 = ModelConfig()
+    path, wb, ws, row_of = _debt_structure_sheet(tmp_path, "term.xlsx")
+    r = row_of(cfg0.senior_final_year)
+    ws.cell(row=r, column=4).value = 0.06        # coupon
+    ws.cell(row=r, column=5).value = 0.0636      # yield
+    ws.cell(row=r, column=6).value = "Term"
+    wb.save(path)
+    cfg, _dev = load_inputs_workbook(path)
+    assert cfg.senior_term_bonds == [
+        (cfg0.senior_first_principal_year, cfg0.senior_final_year, 0.0636)]
+    assert cfg.senior_coupon_scale == {cfg0.senior_final_year: 0.06}
+    assert cfg.senior_yield_scale is None        # the term row is not a serial
+
+
+def test_par_amount_column_overrides_the_revenue_wrap(tmp_path):
+    from ut_pid_model import load_inputs_workbook, SummaryModel, SeniorLienSizer
+    from ut_pid_model import CallProvisions, size_senior_with_dynamic_dsrf
+    path, wb, ws, row_of = _debt_structure_sheet(tmp_path, "par.xlsx")
+    manual = {2050: 1_000_000.0, 2051: 1_000_000.0, 2052: 1_000_000.0,
+              2053: 1_000_000.0, 2054: 1_000_000.0}
+    for y, par in manual.items():
+        ws.cell(row=row_of(y), column=3).value = par
+    wb.save(path)
+    cfg, dev = load_inputs_workbook(path)
+    assert cfg.senior_par_schedule == manual
+    sm = SummaryModel(cfg, dev.build(cfg)).build()
+    senior = size_senior_with_dynamic_dsrf(
+        SeniorLienSizer(cfg, sm),
+        name="Senior", rate=cfg.senior_interest_rate, coverage=cfg.dsc_senior,
+        delivery=cfg.delivery, first_principal_year=cfg.senior_first_principal_year,
+        final_year=cfg.senior_final_year, capi_end_year=cfg.capi_end_date.year,
+        call_provisions=CallProvisions(cfg.premium_call_date, cfg.par_call_date,
+                                       cfg.premium_call_price),
+        par_schedule=cfg.senior_par_schedule)
+    assert senior.par_amount == pytest.approx(sum(manual.values()))
+    got = {p.payment_date.year: p.principal for p in senior.schedule if p.principal}
+    assert got == pytest.approx(manual)
+
+
+def test_old_layout_debt_structure_sheet_is_refused(tmp_path):
+    """The tab gained a Par Amount column, shifting every later column right.  A
+    sheet saved against the old layout parses as numbers, so it has to be caught
+    rather than silently sizing a $0.06 bond."""
+    from ut_pid_model import load_inputs_workbook
+    cfg0 = ModelConfig()
+    path, wb, ws, row_of = _debt_structure_sheet(tmp_path, "old.xlsx")
+    r = row_of(cfg0.senior_final_year)
+    ws.cell(row=r, column=3).value = 0.06        # old Coupon column
+    ws.cell(row=r, column=4).value = 0.0636      # old Yield column
+    ws.cell(row=r, column=5).value = cfg0.senior_final_year   # old Term Final Maturity
+    wb.save(path)
+    with pytest.raises(ValueError, match="older layout"):
+        load_inputs_workbook(path)
+
+
 def test_inputs_workbook_round_trips(tmp_path):
     from ut_pid_model import load_inputs_workbook, write_inputs_workbook
     path = write_inputs_workbook(

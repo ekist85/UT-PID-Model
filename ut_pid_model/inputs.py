@@ -476,63 +476,87 @@ def _write_dev_sheet(ws, dev: DeveloperProjections):
 
 
 
-# ── Debt Structure sheet (pricing-day coupon / yield scale + term bonds) ─────
+# ── Debt Structure sheet (per-maturity par / coupon / yield + serial|term) ───
 def _write_debt_structure_sheet(ws, cfg: ModelConfig):
+    from openpyxl.worksheet.datavalidation import DataValidation
     ws.column_dimensions["A"].width = 2
-    for col in "BCDE":
-        ws.column_dimensions[col].width = 20
-    ws.merge_cells("B1:E1")
-    t = ws["B1"]; t.value = "Debt Structure (pricing day)"
+    for col in "BCDEF":
+        ws.column_dimensions[col].width = 18
+    ws.merge_cells("B1:F1")
+    t = ws["B1"]; t.value = "Debt Structure — Serialize / Term (pricing day)"
     t.fill = _BLUE; t.font = _WHITEFONT; t.alignment = _C
-    ws.merge_cells("B2:E2")
-    ws["B2"].value = ("Leave blank for preliminary analysis (uses the single flat rate / par). "
-                      "On pricing day enter per-maturity Coupon & Yield; for a term bond, "
-                      "put its final maturity year in the Term column on each sinking row.")
-    ws["B2"].font = _NOTE; ws["B2"].alignment = _C
+    ws.merge_cells("B2:F2")
+    ws["B2"].value = (
+        "Leave blank for the flat-rate preliminary sizing. Otherwise, per maturity, enter: "
+        "Par Amount (optional — blank lets the model size the amortization), Coupon, Yield, and "
+        "Type = Serial or Term. Fill one row per SERIAL maturity. For a TERM bond, fill the row "
+        "of its FINAL maturity and mark it Term; everything up to that maturity amortizes into it "
+        "at that coupon/yield. A single Term row (e.g. 2056 · 6.00% · 6.36%) makes the WHOLE "
+        "structure one amortizing term bond priced to that maturity. Prices run to worst call.")
+    ws["B2"].font = _NOTE; ws["B2"].alignment = _L
+    ws.row_dimensions[2].height = 58
+
+    dv_type = DataValidation(type="list", formula1='"Serial,Term"', allow_blank=True)
+    ws.add_data_validation(dv_type)
 
     def _marker(r, text):
-        ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=5)
+        ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=6)
         c = ws.cell(row=r, column=2, value=text)
         c.fill = _SECT; c.font = _SECTFONT; c.alignment = _L
         return r + 1
 
     def _hdr_row(r):
-        for i, h in enumerate(["Maturity Year", "Coupon", "Yield", "Term Final Maturity"]):
+        for i, h in enumerate(["Maturity Year", "Par Amount", "Coupon", "Yield", "Type (Serial/Term)"]):
             c = ws.cell(row=r, column=2 + i, value=h)
             c.fill = _HDRF; c.font = _HDRFONT; c.border = _BORDER; c.alignment = _C
         return r + 1
 
-    def _block(r, marker, years, coupon_scale, yield_scale, term_bonds):
+    def _block(r, marker, years, coupon_scale, yield_scale, term_bonds, par_schedule):
         r = _marker(r, marker)
         r = _hdr_row(r)
-        term_for = {}
+        # Map each year to its term bond's (final, yield) — the term is represented
+        # on its FINAL-maturity row only (that single row defines the whole term).
+        term_final = {}
+        for (f, l, ty) in (term_bonds or []):
+            term_final[l] = ty
+            covered_final = l
+        term_years = set()
         for (f, l, ty) in (term_bonds or []):
             for y in range(f, l + 1):
-                term_for[y] = (l, ty)
+                term_years.add(y)
         for y in years:
+            par = (par_schedule or {}).get(y)
             cpn = (coupon_scale or {}).get(y)
-            tf = term_for.get(y)
-            yld = tf[1] if tf else (yield_scale or {}).get(y)
-            vals = [y, cpn, yld, (tf[0] if tf else None)]
-            for i in range(4):
+            if y in term_final:                     # final maturity of a term bond
+                yld, typ = term_final[y], "Term"
+            elif y in term_years:                   # inside a term (not the final row) — leave blank
+                yld, typ = None, None
+            else:
+                yld = (yield_scale or {}).get(y)
+                typ = "Serial" if yld is not None else None
+            vals = [y, par, cpn, yld, typ]
+            for i in range(5):
                 cell = ws.cell(row=r, column=2 + i)
                 if vals[i] is not None:
                     cell.value = vals[i]
-                cell.fill = _INPUT; cell.border = _BORDER
-                cell.alignment = _C   # center-align all editable (yellow) cells
-                if i in (1, 2):
+                cell.fill = _INPUT; cell.border = _BORDER; cell.alignment = _C
+                if i == 1:
+                    cell.number_format = _DOLLAR
+                if i in (2, 3):
                     cell.number_format = _PCT
+            dv_type.add(ws.cell(row=r, column=6))
             r += 1
         return r + 1
 
     senior_years = list(range(cfg.senior_first_principal_year, cfg.senior_final_year + 1))
     r = _block(4, "SENIOR BONDS", senior_years, cfg.senior_coupon_scale,
-               cfg.senior_yield_scale, cfg.senior_term_bonds)
+               cfg.senior_yield_scale, cfg.senior_term_bonds, cfg.senior_par_schedule)
     ref_first = cfg.delivery_refunding.year + 1
     ref_last = cfg.delivery_refunding.year + cfg.final_mat_yrs_refunding
     ref_years = list(range(ref_first, ref_last + 1))
     _block(r, "REFUNDING BONDS", ref_years, cfg.senior_refunding_coupon_scale,
-           cfg.senior_refunding_yield_scale, cfg.senior_refunding_term_bonds)
+           cfg.senior_refunding_yield_scale, cfg.senior_refunding_term_bonds,
+           cfg.senior_refunding_par_schedule)
     ws.freeze_panes = "B4"
 
 
@@ -723,46 +747,81 @@ def _load_debt_structure(wb) -> dict:
         if isinstance(v, str) and v.upper().startswith(("SENIOR BONDS", "REFUNDING BONDS")):
             marks["senior" if v.upper().startswith("SENIOR") else "refunding"] = row[0].row
 
+    def _num(v):
+        return float(v) if isinstance(v, (int, float)) else None
+
     def _parse(start):
+        # Columns: B Maturity Year | C Par | D Coupon | E Yield | F Type(Serial/Term)
         if start is None:
-            return None, None, None
-        coupon, yld = {}, {}
-        groups: dict[int, list] = {}
-        other = [v for v in marks.values() if v != start]
-        r = start + 2
+            return {}
+        stop = {v for v in marks.values() if v != start}
+        rows = []
+        r = start + 2   # marker row, header row, then data
         while r <= ds.max_row:
-            if r in marks.values():
+            if r in stop:
                 break
             y = ds.cell(row=r, column=2).value
-            c = ds.cell(row=r, column=3).value
-            yv = ds.cell(row=r, column=4).value
-            tf = ds.cell(row=r, column=5).value
             if isinstance(y, (int, float)):
-                y = int(y)
-                if c:
-                    coupon[y] = float(c)
-                if tf:
-                    groups.setdefault(int(tf), []).append((y, float(yv) if yv else None))
-                elif yv:
-                    yld[y] = float(yv)
+                rows.append((int(y),
+                             _num(ds.cell(row=r, column=3).value),   # par
+                             _num(ds.cell(row=r, column=4).value),   # coupon
+                             _num(ds.cell(row=r, column=5).value),   # yield
+                             ds.cell(row=r, column=6).value))        # type
             r += 1
-        term_bonds = []
-        for tf, members in groups.items():
-            years = [yy for yy, _ in members]
-            tyield = next((yv for yy, yv in members if yy == tf and yv), None) \
-                or next((yv for _, yv in members if yv), None)
-            term_bonds.append((min(years), int(tf), tyield))
-        return (coupon or None, yld or None, term_bonds or None)
+        for _y, _par, _cpn, _yld, _typ in rows:
+            if _par is not None and 0 < _par < 1:
+                raise ValueError(
+                    f"Debt Structure: {_y} has a Par Amount of {_par:g}, which is a "
+                    f"rate, not a dollar amount.  This sheet looks like the older "
+                    f"layout (Maturity | Coupon | Yield | Term Final Maturity).  "
+                    f"The tab now reads Maturity | Par Amount | Coupon | Yield | "
+                    f"Type, so every entry after the maturity year sits one column "
+                    f"left of where the model reads it.  Regenerate the sheet with "
+                    f"write_inputs_workbook() and re-enter the scale.")
+            for _label, _v in (("Coupon", _cpn), ("Yield", _yld)):
+                if _v is not None and _v > 1:
+                    raise ValueError(
+                        f"Debt Structure: {_y} has a {_label} of {_v:g}.  Coupons and "
+                        f"yields are decimals (0.06 = 6.00%); a year here means the "
+                        f"sheet is in the older column layout.  Regenerate it with "
+                        f"write_inputs_workbook() and re-enter the scale.")
+        if not rows:
+            return {}
+        year_lo = min(y for y, *_ in rows)
+
+        def _is_term(t):
+            return isinstance(t, str) and t.strip().lower().startswith("term")
+
+        coupon = {y: c for y, p, c, yl, t in rows if c is not None}
+        par = {y: p for y, p, c, yl, t in rows if p is not None}
+        yield_of = {y: yl for y, p, c, yl, t in rows}
+
+        # Term bonds: each Term row is a term-bond FINAL maturity; the bond spans
+        # from the prior boundary (first principal year for the first) up to it.
+        # A single Term row therefore makes the whole structure one term bond.
+        term_bonds, covered, prev = [], set(), year_lo
+        for f in sorted(y for y, p, c, yl, t in rows if _is_term(t)):
+            term_bonds.append((prev, f, yield_of.get(f)))
+            covered.update(range(prev, f + 1))
+            prev = f + 1
+        # Serial maturities: any yield-bearing row not inside a term bond.
+        serial_yield = {y: yl for y, p, c, yl, t in rows
+                        if yl is not None and y not in covered and not _is_term(t)}
+        return {"coupon": coupon or None, "yield": serial_yield or None,
+                "term": term_bonds or None, "par": par or None}
 
     out = {}
-    sc, sy, st = _parse(marks.get("senior"))
-    rc, ry, rt = _parse(marks.get("refunding"))
-    if sc: out["senior_coupon_scale"] = sc
-    if sy: out["senior_yield_scale"] = sy
-    if st: out["senior_term_bonds"] = st
-    if rc: out["senior_refunding_coupon_scale"] = rc
-    if ry: out["senior_refunding_yield_scale"] = ry
-    if rt: out["senior_refunding_term_bonds"] = rt
+    for key, block in (("senior", _parse(marks.get("senior"))),
+                       ("refunding", _parse(marks.get("refunding")))):
+        pre = "senior" if key == "senior" else "senior_refunding"
+        if block.get("coupon"):
+            out[f"{pre}_coupon_scale"] = block["coupon"]
+        if block.get("yield"):
+            out[f"{pre}_yield_scale"] = block["yield"]
+        if block.get("term"):
+            out[f"{pre}_term_bonds"] = block["term"]
+        if block.get("par"):
+            out[f"{pre}_par_schedule"] = block["par"]
     return out
 
 

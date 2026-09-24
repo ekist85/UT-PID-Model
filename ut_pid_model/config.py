@@ -147,9 +147,11 @@ class ModelConfig:
     senior_coupon_scale: Optional[dict] = None          # {maturity_year: coupon}
     senior_yield_scale: Optional[dict] = None           # {maturity_year: yield}
     senior_term_bonds: Optional[list] = None            # [(first_year, last_year, term_yield)]
+    senior_par_schedule: Optional[dict] = None          # {maturity_year: par} — manual amortization override
     senior_refunding_coupon_scale: Optional[dict] = None
     senior_refunding_yield_scale: Optional[dict] = None
     senior_refunding_term_bonds: Optional[list] = None
+    senior_refunding_par_schedule: Optional[dict] = None
 
     # ── Debt-service coverage ────────────────────────────────────────────────
     dsc_senior: float = 1.30            # DSC_SENIOR_LIEN_BONDS

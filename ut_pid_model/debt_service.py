@@ -277,6 +277,7 @@ class SeniorLienSizer:
         coupon_scale: Optional[dict] = None,
         yield_scale: Optional[dict] = None,
         term_bonds: Optional[list] = None,
+        par_schedule: Optional[dict] = None,
     ) -> BondTranche:
         cfg = self.cfg
         dsrf_earn = dsrf_deposit * cfg.interest_earn_rate
@@ -306,27 +307,33 @@ class SeniorLienSizer:
                 balance -= p
             return principals
 
-        # ── Bisection on par: f(par) = sum(principals) is monotone decreasing,
-        #    so the consistent par solves f(par) = par. ───────────────────────
-        lo, hi = 0.0, 1.0
-        while sum(size_for_par(hi).values()) > hi:
-            hi *= 2.0
-            if hi > 1e12:
-                break
-        for _ in range(100):
-            mid = (lo + hi) / 2.0
-            if sum(size_for_par(mid).values()) > mid:
-                lo = mid
-            else:
-                hi = mid
-        par = round((lo + hi) / 2.0 / 5000.0) * 5000.0
-        principals = size_for_par(par)
-        par = sum(principals.values())
+        if par_schedule:
+            # Manual amortization override (Debt Structure "Par Amount" column):
+            # use the entered principal-by-maturity schedule instead of the wrap.
+            principals = {y: float(par_schedule.get(y, 0.0)) for y in principal_years}
+            par = sum(principals.values())
+        else:
+            # ── Bisection on par: f(par) = sum(principals) is monotone decreasing,
+            #    so the consistent par solves f(par) = par. ───────────────────────
+            lo, hi = 0.0, 1.0
+            while sum(size_for_par(hi).values()) > hi:
+                hi *= 2.0
+                if hi > 1e12:
+                    break
+            for _ in range(100):
+                mid = (lo + hi) / 2.0
+                if sum(size_for_par(mid).values()) > mid:
+                    lo = mid
+                else:
+                    hi = mid
+            par = round((lo + hi) / 2.0 / 5000.0) * 5000.0
+            principals = size_for_par(par)
+            par = sum(principals.values())
 
-        # Ensure full amortization: any rounding residual lands on final maturity.
-        assigned = sum(principals.values())
-        if par - assigned != 0:
-            principals[final_year] = principals.get(final_year, 0.0) + (par - assigned)
+            # Ensure full amortization: any rounding residual lands on final maturity.
+            assigned = sum(principals.values())
+            if par - assigned != 0:
+                principals[final_year] = principals.get(final_year, 0.0) + (par - assigned)
 
         tranche = BondTranche(
             name=name, rate=rate, coverage=coverage, delivery=delivery,

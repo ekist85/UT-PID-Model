@@ -1559,6 +1559,35 @@ _p("development.py", '''        Columns: Value of New Lots (lot value rolling in
 
 
 
+# ── Debt Structure: refuse to read a pre-16b4edd sheet ───────────────────────
+# The tab gained a "Par Amount" column, so every column after B shifted right.
+# An Inputs workbook saved against the OLD layout puts its coupons where par is
+# now read (0.06 becomes a $0.06 par) and its term-final-maturity year where the
+# yield is now read (2054 becomes a 205,400% yield).  Both parse as numbers, so
+# nothing would complain — the model would just size a nonsense structure.
+# Check the magnitudes and say plainly what happened.
+_p("inputs.py", '''        if not rows:''',
+   '''        for _y, _par, _cpn, _yld, _typ in rows:
+            if _par is not None and 0 < _par < 1:
+                raise ValueError(
+                    f"Debt Structure: {_y} has a Par Amount of {_par:g}, which is a "
+                    f"rate, not a dollar amount.  This sheet looks like the older "
+                    f"layout (Maturity | Coupon | Yield | Term Final Maturity).  "
+                    f"The tab now reads Maturity | Par Amount | Coupon | Yield | "
+                    f"Type, so every entry after the maturity year sits one column "
+                    f"left of where the model reads it.  Regenerate the sheet with "
+                    f"write_inputs_workbook() and re-enter the scale.")
+            for _label, _v in (("Coupon", _cpn), ("Yield", _yld)):
+                if _v is not None and _v > 1:
+                    raise ValueError(
+                        f"Debt Structure: {_y} has a {_label} of {_v:g}.  Coupons and "
+                        f"yields are decimals (0.06 = 6.00%); a year here means the "
+                        f"sheet is in the older column layout.  Regenerate it with "
+                        f"write_inputs_workbook() and re-enter the scale.")
+        if not rows:''')
+
+
+
 # ── Stale Colorado vocabulary in docstrings / section comments ───────────────
 
 _p("memo.py", '''sources & uses), but states Colorado assumptions — mill levy (governing document cap +

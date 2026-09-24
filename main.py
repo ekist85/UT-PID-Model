@@ -115,6 +115,7 @@ def run_model(export: bool = True, output_dir: str | None = None,
         coupon_scale=cfg.senior_coupon_scale,
         yield_scale=cfg.senior_yield_scale,
         term_bonds=cfg.senior_term_bonds,
+        par_schedule=cfg.senior_par_schedule,
     )
     _sizer = SeniorLienSizer(cfg, sm)
     if cfg.senior_dsrf_deposit is None:

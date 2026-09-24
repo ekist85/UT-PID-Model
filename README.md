@@ -92,7 +92,18 @@ fails and writes nothing, rather than quietly emitting a Colorado-flavoured Utah
 model. `tests/test_model.py::test_port_is_up_to_date_with_colorado` fails when
 the Colorado checkout has moved ahead.
 
-**Currently synced to Colorado `a5d8c31`** (branch head). Colorado's optional
+**Currently synced to Colorado `a5d8c31` plus a cherry-pick of `16b4edd`**
+(the Debt Structure rebuild). Colorado has commits between and after those two —
+a development volume stress, costs-of-issuance proration, a memo absorption
+reorder, deliverable-filename fixes and a call-date alignment — that are
+deliberately *not* ported yet. The port source is reproduced with:
+
+```bash
+git -C ../CO-Metro-District-Model checkout -B ut-debt-structure a5d8c31
+git -C ../CO-Metro-District-Model cherry-pick 16b4edd     # .py files merge clean
+```
+
+Colorado's optional
 **Series C** third lien ports across as code but is carried **inert**: the
 `SIZE_SERIES_C` toggle stays `"No"` and its rows are kept off the Utah Inputs
 template. Series C is sized against a *separate* assessment that reassesses the
@@ -167,8 +178,8 @@ jupyter notebook ut_pid_model_notebook.ipynb
 `write_inputs_workbook()` produces an editable **Inputs** workbook — an *Inputs*
 sheet (Title | Value | Range Name | Notes, editable **yellow** value cells), a
 *Development Inputs* sheet (product definitions plus lot delivery and home
-closing grids), a *Debt Structure* sheet (per-maturity coupons, yields and term
-bonds for pricing day), and a **Utah Property Tax Reference** sheet carrying the
+closing grids), a *Debt Structure* sheet (per-maturity par, coupon, yield and
+Serial/Term structuring — see below), and a **Utah Property Tax Reference** sheet carrying the
 residential exemption history, the editable builder-inventory ratio table, and
 the Utah property tax calendar.
 
@@ -182,6 +193,33 @@ sm = SummaryModel(cfg, dev.build(cfg)).build()
 ```bash
 python -c "import main; main.run_model(inputs_path='my_inputs.xlsx')"
 ```
+
+### The Debt Structure tab
+
+One row per maturity, five columns — **Maturity Year | Par Amount | Coupon |
+Yield | Type (Serial/Term)** — for the senior bonds and again for the refunding:
+
+* **Leave it blank** for preliminary work. Sizing runs off the single flat rate
+  on the Inputs page, exactly as before.
+* **Serial maturities** — fill Coupon and Yield on each row and mark it
+  `Serial`.
+* **Term bonds** — fill the row of the term's *final* maturity and mark it
+  `Term`. Everything up to that maturity amortizes into it at that coupon and
+  yield. A single Term row therefore makes the whole structure one amortizing
+  term bond. Consecutive Term rows define successive terms.
+* **Par Amount** is optional and overrides the revenue-wrap amortization with a
+  manual principal schedule. Leave it blank to let the model size the
+  amortization; fill it to dictate one.
+
+Prices run through the existing price-to-worst engine, so a yield above the
+coupon prices at a discount — a single `2054 · 6.00% · 6.36% · Term` row on the
+reference deal sizes to $5,685,000 par with a $365,154 discount, against
+$5,665,000 at the flat rate.
+
+The columns shifted when Par Amount was added, so a sheet saved against the old
+four-column layout would read its coupons as par amounts. Loading one is
+**refused with an explanation** rather than silently sizing a $0.06 bond —
+regenerate the sheet with `write_inputs_workbook()` and re-enter the scale.
 
 ### District costs on the Inputs page
 
