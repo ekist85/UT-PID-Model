@@ -2744,6 +2744,17 @@ _p("main.py", '''        forecast_xlsx = build_forecast_report(
         forecast_xlsx = build_forecast_report(
             scenarios, output_path=f"{output_dir}/{exhibits_base}.xlsx")''')
 
+# The notebook is a second writer of the same three deliverables and builds its
+# own paths, so renaming the exhibits in main.py alone left anyone driving the
+# model from ut_pid_model_notebook.ipynb with the old name.
+_p("build_notebook.py", '''_base = deliverable_basename(cfg, lots=dev.total_lots)''',
+   '''_base = deliverable_basename(cfg, lots=dev.total_lots)
+_exhibits = deliverable_basename(cfg, lots=dev.total_lots, label="Forecast Exhibits")''')
+
+_p("build_notebook.py",
+   '''fpath = build_forecast_report(scenarios, output_path=os.path.join(OUTPUT_DIR, f"{_base} - Forecast Exhibits.xlsx"))''',
+   '''fpath = build_forecast_report(scenarios, output_path=os.path.join(OUTPUT_DIR, f"{_exhibits}.xlsx"))''')
+
 _p("forecast_report.py", '''        f"IN {cfg.county.upper()} COUNTY, COLORADO",''',
    '''        f"IN {cfg.county.upper()} COUNTY, UTAH",''')
 

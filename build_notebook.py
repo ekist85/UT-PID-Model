@@ -335,6 +335,7 @@ print(f"TOTAL developer reimbursement:  ${total:,.0f}")
 # district, # lots, Tierra Financial Advisors (+ a per-file tag).
 from ut_pid_model import deliverable_basename
 _base = deliverable_basename(cfg, lots=dev.total_lots)
+_exhibits = deliverable_basename(cfg, lots=dev.total_lots, label="Forecast Exhibits")
 path = build_excel_report(cfg, sm, senior, su, refunding, sub, surplus, dev=dev,
                           series_c=series_c, contribution=contribution,
                           output_path=os.path.join(OUTPUT_DIR, f"{_base}.xlsx"))
@@ -372,7 +373,7 @@ for s in scenarios:
     print(f"Exhibit {s.exhibit} ({s.pace_factor:>4.0%} pace): build-out {max(closed)}, "
           f"min construction-era coverage {min(covs):.2f}x")
 
-fpath = build_forecast_report(scenarios, output_path=os.path.join(OUTPUT_DIR, f"{_base} - Forecast Exhibits.xlsx"))
+fpath = build_forecast_report(scenarios, output_path=os.path.join(OUTPUT_DIR, f"{_exhibits}.xlsx"))
 print(f"\\nForecast exhibits written to: {fpath}")
 import openpyxl
 print("Sheets:", openpyxl.load_workbook(fpath).sheetnames)""")

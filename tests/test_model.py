@@ -722,6 +722,31 @@ def test_capi_fund_tab_runs_through_its_last_draw(deliverables):
     assert (max(dates).year, max(dates).month) == (last_draw.year, last_draw.month)
 
 
+def test_nothing_still_names_the_exhibits_by_appending_a_suffix():
+    """Every writer of the exhibits names them through ``deliverable_basename``'s
+    label, so the exhibits are never "<reimbursement analysis name> - Forecast
+    Exhibits".  main.py is not the only writer — build_notebook.py builds the
+    same three deliverables and its own paths, so renaming the exhibits there
+    was missed and anyone driving the model from the notebook kept getting the
+    old name."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # Assembled, so this test's own source is not a hit.
+    needle = " - " + "Forecast Exhibits" + ".xlsx"
+    offenders = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        # The port tool quotes the pre-rename code as patch anchors, by design.
+        dirnames[:] = [d for d in dirnames
+                       if d not in {".git", "__pycache__", "tools", "docs"}]
+        for name in filenames:
+            if not name.endswith((".py", ".ipynb")):
+                continue
+            path = os.path.join(dirpath, name)
+            text = open(path, encoding="utf-8", errors="ignore").read()
+            if needle in text:
+                offenders.append(os.path.relpath(path, root))
+    assert not offenders, offenders
+
+
 def test_memo_states_the_utah_framework(deliverables):
     out, _r = deliverables
     html = _deliverable(out, _r, MEMO).read_text()
