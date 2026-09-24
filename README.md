@@ -256,9 +256,16 @@ senior interest rate no longer affects the par** — it is only the fallback for
 blank sheet. On the reference deal a 6.250% scale sizes to $5,430,000 whether
 the Inputs rate says 4.000% or 8.000%, against $5,665,000 blank at 5.875%.
 
-Prices are **truncated to three decimals**, the convention DBC prints and
-computes its OID from, so the printed price and the premium/OID always agree and
-a price you enter to three decimals is used verbatim.
+Prices are computed on **Excel's `PRICE()`** — the 30/360 clean price, at the
+frequency set by `INTEREST_FREQUENCY` — and then **truncated to three decimals**,
+the convention DBC prints and computes its OID from. So the printed price and
+the premium/OID always agree, and a price you enter to three decimals is used
+verbatim. A bond reoffered *at* its coupon is quoted at par.
+
+On Viridian Farm PID No. 2 this reproduces the underwriter's run exactly:
+`PRICE(9/30/2026, 3/1/2056, 6.250%, 6.625%, 100, 1)` = 95.14825496 → **95.148**,
+OID **−$348,373.60**, first coupon **$188,226** (151/360 from the dated date),
+total debt service **$17,139,788**.
 
 Prices run through the existing price-to-worst engine, so a yield above the
 coupon prices at a discount — a single `2054 · 6.00% · 6.36% · Term` row on the

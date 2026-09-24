@@ -956,6 +956,55 @@ def test_frequency_round_trips_through_the_inputs_page(tmp_path):
     assert cfg.coupon_frequency == 1
 
 
+def test_price_matches_excel_price_on_the_underwriters_run():
+    """Viridian Farm PID No. 2, from the underwriter's own sheet:
+    PRICE(9/30/2026, 3/1/2056, 6.250%, 6.625%, 100, 1) = 95.14825496,
+    which truncates to the 95.148 DBC prints."""
+    from ut_pid_model.pricing import clean_price, price_to_worst
+    S, M, call = date(2026, 9, 30), date(2056, 3, 1), date(2031, 3, 1)
+    assert clean_price(S, M, 0.0625, 0.06625, 100.0, 1) == pytest.approx(
+        95.14825496, abs=1e-8)
+    assert price_to_worst(S, M, 0.0625, 0.06625, [(call, 103.0)], 1) == pytest.approx(
+        95.14825496, abs=1e-8)
+    # Frequency matters: semiannual is a different bond and a different price.
+    assert price_to_worst(S, M, 0.0625, 0.06625, [(call, 103.0)], 2) != pytest.approx(
+        95.14825496, abs=1e-4)
+
+
+def test_a_bond_reoffered_at_its_coupon_is_quoted_at_par():
+    """The 9.000%/9.000% series on the same run prints 100.000.  Excel's PRICE
+    returns 99.90 for it off a coupon date — quoting par is the convention."""
+    from ut_pid_model.pricing import price_to_worst
+    S = date(2026, 9, 30)
+    for freq in (1, 2):
+        assert price_to_worst(S, date(2056, 3, 15), 0.09, 0.09,
+                              [(date(2031, 3, 1), 103.0)], freq) == pytest.approx(100.0)
+
+
+def test_annual_frequency_reproduces_the_underwriters_oid():
+    """End to end on the underwriter's sizing: price, interest and OID."""
+    from ut_pid_model.debt_service import BondTranche, PaymentRow, SeniorLienSizer
+    par = sum(DBC_2056A.values())
+    t = BondTranche(name="2056A", rate=0.0625, coverage=1.30, delivery=date(2026, 9, 30),
+                    first_principal_year=2032, final_year=2056, prin_month=3, prin_day=1,
+                    capi_end_year=None, dsrf_deposit=0.0, dsrf_earn_rate=0.0,
+                    par_amount=par,
+                    call_provisions=CallProvisions(date(2031, 3, 1), None, 103.0),
+                    coupon_scale={2056: 0.0625}, term_bonds=[(2032, 2056, 0.06625)],
+                    coupon_frequency=1)
+    t.schedule = [PaymentRow(payment_date=date(y, 3, 1), principal=DBC_2056A.get(y, 0.0),
+                             interest=0.0, capitalized_interest=0.0,
+                             dsrf_earnings=0.0, surplus_release=0.0)
+                  for y in range(2027, 2057)]
+    SeniorLienSizer._apply_coupon_scale(t, None)
+    assert t.price_for(2056) == pytest.approx(95.148)
+    assert t.schedule[0].interest == pytest.approx(188_226, abs=1)     # 151/360 stub
+    assert t.schedule[1].interest == pytest.approx(448_750, abs=1)
+    assert sum(p.principal + p.interest for p in t.schedule) == pytest.approx(
+        17_139_788, abs=1)
+    assert t.total_premium == pytest.approx(-348_373.60, abs=0.01)
+
+
 def test_price_is_truncated_to_three_decimals():
     """DBC prints the price to three decimals and computes the OID from the
     TRUNCATED price — its -348,373.60 is exactly 7,180,000 x (95.148-100)/100.

@@ -109,7 +109,14 @@ def price_to_worst(settlement: date, maturity: date, coupon: float, ytm: float,
     for call_date, call_price in calls:
         if settlement < call_date < maturity:
             scenarios.append((call_date, call_price))
-    prices = [price_from_dated_date(settlement, red_date, coupon, ytm, red_price, freq)
+    # A bond reoffered AT its coupon is a par bond and is quoted at 100 — which
+    # is what the underwriter's run shows for the 9.000%/9.000% series.  Excel's
+    # PRICE() returns 99.90 for that off a coupon date, because it discounts the
+    # odd first period compound while interest accrues across it simple; quoting
+    # par is the market convention, not a fudge.
+    if abs(ytm - coupon) < 1e-12:
+        return 100.0
+    prices = [clean_price(settlement, red_date, coupon, ytm, red_price, freq)
               for red_date, red_price in scenarios if red_date > settlement]
     return min(prices) if prices else 100.0
 

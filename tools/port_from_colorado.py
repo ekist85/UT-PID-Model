@@ -2234,20 +2234,26 @@ _p("debt_service.py", '''                target = net_rev / coverage + dsrf_earn
 
 
 
-# Price the cash flows the bond actually pays.  Now that interest accrues from
-# the dated date, the first coupon is a STUB whenever the bonds are not dated on
-# a coupon date, and the price has to discount that stub rather than a full
-# half-year.  On Viridian Farm PID No. 2 (dated 9/30/2026, 3/1/2056 maturity,
-# 6.250%/6.625%) this is 95.1516 against DBC's 95.148 — the last 0.004.
-# A bond reoffered at its coupon still prices at exactly 100: accrual and
-# discounting share the same 30/360 clock, so the identity holds through a stub.
+# Price on Excel's PRICE() — the convention the underwriter actually used.
+# Confirmed from their sheet: PRICE(9/30/2026, 3/1/2056, 6.250%, 6.625%, 100, 1)
+# returns 95.14825496, which truncates to DBC's 95.148 exactly.  Frequency comes
+# from the INTEREST_FREQUENCY input, and a bond reoffered at its coupon is
+# quoted at par.  `price_from_dated_date` stays available as the new-issue
+# present-value alternative.
 _p("pricing.py", '''    prices = []
     for red_date, red_price in scenarios:
         n = semiannual_periods(settlement, red_date, freq)
         if n > 0:
             prices.append(bond_price(n, coupon, ytm, red_price, freq))
     return min(prices) if prices else 100.0''',
-   '''    prices = [price_from_dated_date(settlement, red_date, coupon, ytm, red_price, freq)
+   '''    # A bond reoffered AT its coupon is a par bond and is quoted at 100 — which
+    # is what the underwriter's run shows for the 9.000%/9.000% series.  Excel's
+    # PRICE() returns 99.90 for that off a coupon date, because it discounts the
+    # odd first period compound while interest accrues across it simple; quoting
+    # par is the market convention, not a fudge.
+    if abs(ytm - coupon) < 1e-12:
+        return 100.0
+    prices = [clean_price(settlement, red_date, coupon, ytm, red_price, freq)
               for red_date, red_price in scenarios if red_date > settlement]
     return min(prices) if prices else 100.0
 
