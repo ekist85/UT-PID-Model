@@ -291,6 +291,13 @@ money the district actually spends is available to neither bond — and shows as
 its own **− District O&M** column on Summary - Detail and against operations
 revenue on the **O&M Revenue** tab.
 
+**`INTEREST_FREQUENCY`** (Bond Structure) is a Semiannual/Annual dropdown.
+Semiannual is the default: two coupons a year, on the principal month and six
+months later. Annual pays one coupon a year on the principal date, accrues over
+the full year, and discounts the price at annual compounding. It drives the
+schedule and the price together — a frequency that changed only the price while
+the bonds went on paying twice a year would be a trap.
+
 Two more rows worth knowing about: **`PROJECTION_YEARS`** (Tax & Valuation,
 default 40) sets how far the development, taxable-value, revenue and summary
 tabs project from delivery — it floors at the longest bond maturity, so it can

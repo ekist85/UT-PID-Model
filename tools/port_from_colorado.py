@@ -2329,6 +2329,93 @@ def coupon_at(coupon_scale, term_bonds, rate: float, year: int) -> float:''')
 
 
 
+# ── Interest payment frequency (Annual / Semiannual) ─────────────────────────
+# An Inputs-page dropdown, driving BOTH the payment schedule and the pricing —
+# a frequency that changed only the price calculation while the bonds went on
+# paying twice a year would be a trap.  Semiannual is the default and is the
+# behaviour that was there before.
+_p("config.py", '''    int_maturity: int = 9               # INT_MATURITY  (prin + 6)''',
+   '''    int_maturity: int = 9               # INT_MATURITY  (prin + 6)
+    # "Semiannual" (two coupons a year, the default) or "Annual" (one, on the
+    # principal date).  Drives the coupon dates, the accrual and the compounding
+    # the price is discounted at.
+    interest_frequency: str = "Semiannual"   # INTEREST_FREQUENCY''')
+
+_p("config.py", '''    @property
+    def mill_levy_cap(self) -> float:''',
+   '''    @property
+    def coupon_frequency(self) -> int:
+        """Coupons a year — 1 for Annual, 2 for Semiannual."""
+        return 1 if str(self.interest_frequency).strip().lower().startswith("annual") else 2
+
+    @property
+    def mill_levy_cap(self) -> float:''')
+
+_p("inputs.py", '''    ("Tax & Valuation", "Reassessment Frequency", "REASSESS_FREQUENCY", "reassess_frequency", "text", "Annual (Utah, § 59-2-303.1) or Biennial (Colorado cadence)"),''',
+   '''    ("Tax & Valuation", "Reassessment Frequency", "REASSESS_FREQUENCY", "reassess_frequency", "text", "Annual (Utah, § 59-2-303.1) or Biennial (Colorado cadence)"),
+    ("Bond Structure", "Interest Payment Frequency", "INTEREST_FREQUENCY", "interest_frequency", "str", "Semiannual (2 coupons a year) or Annual (1); drives the schedule and the price"),''')
+
+_p("inputs.py", '''    dv_series = DataValidation(
+        type="list", formula1='"Senior,Subordinate,Proportional"',
+        allow_blank=True)''',
+   '''    dv_series = DataValidation(
+        type="list", formula1='"Senior,Subordinate,Proportional"',
+        allow_blank=True)
+    dv_freq = DataValidation(
+        type="list", formula1='"Semiannual,Annual"', allow_blank=True)
+    ws.add_data_validation(dv_freq)''')
+
+_p("inputs.py", '''        if attr == "developer_contribution_series":
+            dv_series.add(vc)''',
+   '''        if attr == "developer_contribution_series":
+            dv_series.add(vc)
+        if attr == "interest_frequency":
+            dv_freq.add(vc)''')
+
+# Schedule: one coupon a year when Annual, on the principal date.
+_p("debt_service.py", '''        dates = sorted({date(y, m, t.prin_day)
+                        for y in range(t.delivery.year, t.final_year + 1)
+                        for m in (cfg.int_maturity, t.prin_month)
+                        if date(y, m, t.prin_day) > t.delivery})''',
+   '''        months = ((t.prin_month,) if cfg.coupon_frequency == 1
+                  else (cfg.int_maturity, t.prin_month))
+        dates = sorted({date(y, m, t.prin_day)
+                        for y in range(t.delivery.year, t.final_year + 1)
+                        for m in months
+                        if date(y, m, t.prin_day) > t.delivery})''')
+
+# Nothing follows the principal date when there is only one coupon a year.
+_p("debt_service.py", '''        post_prin = 0.5 if cfg.int_maturity > cfg.prin_maturity else 0.0''',
+   '''        post_prin = (0.5 if (cfg.coupon_frequency == 2
+                             and cfg.int_maturity > cfg.prin_maturity) else 0.0)''')
+
+# Price at the same frequency the bonds pay.
+_p("debt_service.py", '''    def _call_scenarios(self) -> list[tuple[date, float]]:''',
+   '''    coupon_frequency: int = 2                    # 1 = Annual, 2 = Semiannual
+
+    def _call_scenarios(self) -> list[tuple[date, float]]:''')
+
+_p("debt_service.py", '''            return _truncate3(price_to_worst(self.delivery, maturity,
+                                             self.coupon_for(last), ty,
+                                             self._call_scenarios()))''',
+   '''            return _truncate3(price_to_worst(self.delivery, maturity,
+                                             self.coupon_for(last), ty,
+                                             self._call_scenarios(),
+                                             self.coupon_frequency))''')
+
+_p("debt_service.py", '''        return _truncate3(price_to_worst(self.delivery, maturity, self.coupon_for(year),
+                                         self.yield_for(year), self._call_scenarios()))''',
+   '''        return _truncate3(price_to_worst(self.delivery, maturity, self.coupon_for(year),
+                                         self.yield_for(year), self._call_scenarios(),
+                                         self.coupon_frequency))''')
+
+_p("debt_service.py", '''            price_scale=price_scale,
+        )''',
+   '''            price_scale=price_scale, coupon_frequency=cfg.coupon_frequency,
+        )''')
+
+
+
 # ── Stale Colorado vocabulary in docstrings / section comments ───────────────
 
 _p("memo.py", '''sources & uses), but states Colorado assumptions — mill levy (governing document cap +

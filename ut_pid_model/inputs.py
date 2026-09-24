@@ -107,6 +107,7 @@ _SPECS: list[tuple] = [
     ("Tax & Valuation", "Personal Property Uniform Fee %", "UNIFORM_FEE_PRC", "uniform_fee_prc", "pct", "§ 59-2-405; % of mill revenue"),
     ("Tax & Valuation", "Uniform Fee Taxable Value Threshold", "UNIFORM_FEE_AV_THRESHOLD", "uniform_fee_av_threshold", "float", "$"),
     ("Tax & Valuation", "Reassessment Frequency", "REASSESS_FREQUENCY", "reassess_frequency", "text", "Annual (Utah, § 59-2-303.1) or Biennial (Colorado cadence)"),
+    ("Bond Structure", "Interest Payment Frequency", "INTEREST_FREQUENCY", "interest_frequency", "str", "Semiannual (2 coupons a year) or Annual (1); drives the schedule and the price"),
 
     ("Mill Levies", "Mill Levy — Governing Document Cap", "MILL_LEVY_GOVERNING_DOC", "mill_levy_governing_doc", "float", "mills"),
     ("Mill Levies", "Mill Levy — Indenture Cap", "MILL_LEVY_INDENTURE", "mill_levy_indenture", "float", "mills; blank ⇒ no indenture cap"),
@@ -288,6 +289,9 @@ def write_inputs_workbook(
     dv_series = DataValidation(
         type="list", formula1='"Senior,Subordinate,Proportional"',
         allow_blank=True)
+    dv_freq = DataValidation(
+        type="list", formula1='"Semiannual,Annual"', allow_blank=True)
+    ws.add_data_validation(dv_freq)
     ws.add_data_validation(dv_yesno)
     ws.add_data_validation(dv_tf)
     ws.add_data_validation(dv_series)
@@ -326,6 +330,8 @@ def write_inputs_workbook(
             (dv_tf if is_bool_flag else dv_yesno).add(vc)
         if attr == "developer_contribution_series":
             dv_series.add(vc)
+        if attr == "interest_frequency":
+            dv_freq.add(vc)
         rc = ws.cell(row=r, column=4, value=rng); rc.font = _NOTE; rc.border = _BORDER; rc.alignment = _L
         nc = ws.cell(row=r, column=5, value=note); nc.font = _NOTE; nc.border = _BORDER; nc.alignment = _L
         r += 1

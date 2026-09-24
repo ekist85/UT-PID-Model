@@ -906,6 +906,56 @@ def _dbc_tranche(price_scale=None):
     return t
 
 
+def test_interest_frequency_drives_the_schedule_and_the_price():
+    """Annual means one coupon a year, on the principal date, and a price
+    discounted at annual compounding; Semiannual is the default and unchanged."""
+    from ut_pid_model.pricing import price_from_dated_date
+    assert ModelConfig().coupon_frequency == 2
+    assert ModelConfig(interest_frequency="Annual").coupon_frequency == 1
+    assert ModelConfig(interest_frequency="annual").coupon_frequency == 1
+
+    def sized(freq):
+        cfg = ModelConfig(interest_frequency=freq)
+        dev = viridian_farm_projections().build(cfg)
+        sm = SummaryModel(cfg, dev).build()
+        return cfg, size_senior_with_dynamic_dsrf(
+            SeniorLienSizer(cfg, sm), name="Senior", rate=cfg.senior_interest_rate,
+            coverage=cfg.dsc_senior, delivery=cfg.delivery,
+            first_principal_year=cfg.senior_first_principal_year,
+            final_year=cfg.senior_final_year, capi_end_year=cfg.capi_end_date.year,
+            call_provisions=CallProvisions(cfg.premium_call_date, cfg.par_call_date,
+                                           cfg.premium_call_price))
+
+    _c2, semi = sized("Semiannual")
+    _c1, ann = sized("Annual")
+    assert len([p for p in semi.schedule if p.payment_date.year == 2040]) == 2
+    assert len([p for p in ann.schedule if p.payment_date.year == 2040]) == 1
+    assert all(p.payment_date.month == _c1.prin_maturity for p in ann.schedule)
+    # Annual compounding discounts less heavily, so the same discount bond
+    # prices HIGHER — which is why it cannot explain a price below ours.
+    kw = dict(dated=date(2026, 9, 30), redemption_date=date(2056, 3, 1),
+              coupon=0.0625, ytm=0.06625)
+    assert price_from_dated_date(freq=1, **kw) > price_from_dated_date(freq=2, **kw)
+
+
+def test_frequency_round_trips_through_the_inputs_page(tmp_path):
+    import openpyxl
+    from ut_pid_model import load_inputs_workbook, write_inputs_workbook
+    path = write_inputs_workbook(output_path=str(tmp_path / "freq.xlsx"))
+    wb = openpyxl.load_workbook(path)
+    ws = wb["Inputs"]
+    cell = next(ws.cell(row=r, column=3) for r in range(5, ws.max_row + 1)
+                if ws.cell(row=r, column=4).value == "INTEREST_FREQUENCY")
+    assert cell.value == "Semiannual"
+    assert any('"Semiannual,Annual"' in (dv.formula1 or "")
+               for dv in ws.data_validations.dataValidation)
+    cell.value = "Annual"
+    wb.save(path)
+    cfg, _dev = load_inputs_workbook(path)
+    assert cfg.interest_frequency == "Annual"
+    assert cfg.coupon_frequency == 1
+
+
 def test_price_is_truncated_to_three_decimals():
     """DBC prints the price to three decimals and computes the OID from the
     TRUNCATED price — its -348,373.60 is exactly 7,180,000 x (95.148-100)/100.

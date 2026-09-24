@@ -117,6 +117,10 @@ class ModelConfig:
     # (Colorado's Feb/June collections put principal on 1 December.)
     prin_maturity: int = 3              # PRIN_MATURITY (month principal is paid)
     int_maturity: int = 9               # INT_MATURITY  (prin + 6)
+    # "Semiannual" (two coupons a year, the default) or "Annual" (one, on the
+    # principal date).  Drives the coupon dates, the accrual and the compounding
+    # the price is discounted at.
+    interest_frequency: str = "Semiannual"   # INTEREST_FREQUENCY
     prin_maturity_day_senior: int = 1   # PRIN_MATURITY_DAY_SENIOR
     prin_maturity_day_sub: int = 15     # PRIN_MATURITY_DAY_SUB
 
@@ -412,6 +416,11 @@ class ModelConfig:
         if collection_year < start:
             return 0.0
         return self.om_expense * (1 + self.om_growth_rate) ** (collection_year - start)
+
+    @property
+    def coupon_frequency(self) -> int:
+        """Coupons a year — 1 for Annual, 2 for Semiannual."""
+        return 1 if str(self.interest_frequency).strip().lower().startswith("annual") else 2
 
     @property
     def mill_levy_cap(self) -> float:

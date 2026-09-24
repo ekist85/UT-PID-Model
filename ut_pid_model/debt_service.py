@@ -205,6 +205,8 @@ class BondTranche:
         term = self._term_for(year)
         return term[1] if term is not None else None
 
+    coupon_frequency: int = 2                    # 1 = Annual, 2 = Semiannual
+
     def _call_scenarios(self) -> list[tuple[date, float]]:
         cp = self.call_provisions
         if not cp or cp.premium_call_date is None:
@@ -237,10 +239,12 @@ class BondTranche:
             maturity = date(last, self.prin_month, self.prin_day)
             return _truncate3(price_to_worst(self.delivery, maturity,
                                              self.coupon_for(last), ty,
-                                             self._call_scenarios()))
+                                             self._call_scenarios(),
+                                             self.coupon_frequency))
         maturity = date(year, self.prin_month, self.prin_day)
         return _truncate3(price_to_worst(self.delivery, maturity, self.coupon_for(year),
-                                         self.yield_for(year), self._call_scenarios()))
+                                         self.yield_for(year), self._call_scenarios(),
+                                         self.coupon_frequency))
 
     def premium_for(self, year: int, principal: float) -> float:
         """Premium / (original-issue discount) on a maturity = (price − par) × principal."""
@@ -337,7 +341,8 @@ class SeniorLienSizer:
 
         principal_years = list(range(first_principal_year, final_year + 1))
         # Share of a year's interest accruing AFTER the principal date.
-        post_prin = 0.5 if cfg.int_maturity > cfg.prin_maturity else 0.0
+        post_prin = (0.5 if (cfg.coupon_frequency == 2
+                             and cfg.int_maturity > cfg.prin_maturity) else 0.0)
 
         def _wrap(par: float, interest_of) -> dict[int, float]:
             """The wrap formula for an assumed par, charging ``interest_of(year,
@@ -458,7 +463,7 @@ class SeniorLienSizer:
             dsrf_earn_rate=cfg.interest_earn_rate, par_amount=par,
             call_provisions=call_provisions, reoffering_yield=reoffering_yield,
             coupon_scale=coupon_scale, yield_scale=yield_scale, term_bonds=term_bonds,
-            price_scale=price_scale,
+            price_scale=price_scale, coupon_frequency=cfg.coupon_frequency,
         )
         tranche.schedule = self._build_schedule(tranche, principals, release_surplus)
         if coupon_scale:
@@ -511,9 +516,11 @@ class SeniorLienSizer:
         # other coupon in September, so the mid-year coupon falls AFTER the
         # principal date within a calendar year — the reverse of Colorado's
         # June/December.  Sorting is what makes both states right.
+        months = ((t.prin_month,) if cfg.coupon_frequency == 1
+                  else (cfg.int_maturity, t.prin_month))
         dates = sorted({date(y, m, t.prin_day)
                         for y in range(t.delivery.year, t.final_year + 1)
-                        for m in (cfg.int_maturity, t.prin_month)
+                        for m in months
                         if date(y, m, t.prin_day) > t.delivery})
 
         # Interest accrues from the DATED date, so a bond that is not dated on a
