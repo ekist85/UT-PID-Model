@@ -196,7 +196,7 @@ senior = size_senior_with_dynamic_dsrf(
     name=f"Senior Bonds (Series {cfg.delivery_year}A)",
     rate=cfg.senior_interest_rate, coverage=cfg.dsc_senior, delivery=cfg.delivery,
     first_principal_year=cfg.senior_first_principal_year,
-    final_year=cfg.senior_final_year, capi_end_year=cfg.capi_end_date.year,
+    final_year=cfg.senior_final_year, capi_end=cfg.capi_end_date,
     call_provisions=senior_calls, reoffering_yield=cfg.senior_reoffering_yield,
     coupon_scale=cfg.senior_coupon_scale, yield_scale=cfg.senior_yield_scale,
     term_bonds=cfg.senior_term_bonds,

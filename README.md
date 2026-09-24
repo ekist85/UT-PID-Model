@@ -112,10 +112,16 @@ assessment on the same property is a statutory question this model has not
 worked through, and an untested toggle in a client-facing template is worse than
 no toggle. Turning it on is a one-line change once that authority is settled.
 
-Seven upstream fixes ride in the patch set and are worth pushing back to
+Eight upstream fixes ride in the patch set and are worth pushing back to
 `co_metro_model` (an eighth — flooring the solved subordinate par instead of
 rounding it — was adopted upstream in `ba72e6b`, so the patch is retired):
 
+* **The capitalized-interest end date snaps to the principal month only.**
+  `_snap_to_payment_date` can never land on the other coupon, so 36 months from
+  9/30/2026 — which is 9/30/2029 — was reported as 3/1/2029, i.e. 29 months.
+  The port snaps to the most recent *coupon* date at the bond's frequency
+  (9/1/2029 semiannual, 3/1/2029 annual) and decides capitalization by date
+  rather than by year.
 * **Interest is charged as a full half-year, including the first coupon.**
   Interest accrues from the DATED date, so a bond not dated on a coupon date
   owes a stub first coupon — the reference workbook's first senior coupon is

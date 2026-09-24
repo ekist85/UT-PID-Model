@@ -123,7 +123,7 @@ class RefundingAnalysis:
             delivery=delivery,
             first_principal_year=first_prin_year,
             final_year=final_year,
-            capi_end_year=None,          # refunding bonds are not capitalized
+            capi_end=None,               # refunding bonds are not capitalized
             dsrf_deposit=0.0,            # reuses the released reserve
             release_surplus=False,
             call_provisions=refunding_calls,

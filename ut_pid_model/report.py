@@ -796,7 +796,8 @@ def _build_su_first_sheet(ws, cfg, senior, sub_result, surplus_fund=None, dev=No
     sr_gross = [(p.payment_date, p.gross_total) for p in senior.schedule]
     sr_first_int = min((p.payment_date for p in senior.schedule), default=None)
     sr_first_mat = min((p.payment_date for p in senior.schedule if p.principal), default=None)
-    sr_final = max((p.payment_date for p in senior.schedule), default=None)
+    sr_final = max((p.payment_date for p in senior.schedule if p.principal),
+                   default=None)
     sr_avg_life = _avg_life(sr_prin, cfg.delivery, senior_par)
     sr_total_ds = sum(p.gross_total for p in senior.schedule)
     sr_max_ds = max(senior.annual_gross_ds().values()) if senior.schedule else 0.0
@@ -996,7 +997,8 @@ def _build_su_refunding_sheet(ws, cfg, refunding_result, dev=None):
     gross = [(p.payment_date, p.gross_total) for p in rb.schedule]
     first_int = min((p.payment_date for p in rb.schedule), default=None)
     first_mat = min((p.payment_date for p in rb.schedule if p.principal), default=None)
-    final_mat = max((p.payment_date for p in rb.schedule), default=None)
+    final_mat = max((p.payment_date for p in rb.schedule if p.principal),
+                     default=None)
     par_call = rb.call_provisions.par_call_date if rb.call_provisions else None
 
     section(r, "Key Assumptions:"); r += 2

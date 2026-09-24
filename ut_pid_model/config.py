@@ -534,10 +534,31 @@ class ModelConfig:
                              self.prin_maturity_day_senior)
         return candidate
 
+    def _last_coupon_on_or_before(self, d: date) -> date:
+        """
+        The most recent COUPON date on or before ``d``.
+
+        ``_snap_to_payment_date`` only ever returns the principal month, which
+        is right for a call (bonds are redeemed on a principal date) but wrong
+        for capitalized interest, which runs to an interest payment date — and
+        on a semiannual bond that is usually the OTHER month.
+        """
+        months = ((self.prin_maturity,) if self.coupon_frequency == 1
+                  else (self.prin_maturity, self.int_maturity))
+        candidates = [date(y, m, self.prin_maturity_day_senior)
+                      for y in (d.year, d.year - 1) for m in months]
+        return max(c for c in candidates if c <= d)
+
     @property
     def capi_end_date(self) -> date:
-        """CAPI_END_DATE — last capitalized-interest payment date."""
-        return self._snap_to_payment_date(_edate(self.delivery, self.capi_term))
+        """
+        CAPI_END_DATE — the last interest payment funded from bond proceeds.
+
+        ``capi_term`` months from delivery, snapped back to the coupon date on
+        or before it: 36 months from 9/30/2026 is 9/30/2029, so the last
+        capitalized coupon is 9/1/2029 on a semiannual bond.
+        """
+        return self._last_coupon_on_or_before(_edate(self.delivery, self.capi_term))
 
     @property
     def premium_call_date(self) -> date:

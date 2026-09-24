@@ -2484,6 +2484,108 @@ _p("debt_service.py", '''        Annual interest in year t = sum over maturities
 
 
 
+# ── CAPI end date lands on a COUPON date, and capitalisation is date-based ───
+# `_snap_to_payment_date` snapped back to the PRINCIPAL month only, so it could
+# never land on a September coupon: 36 months from 9/30/2026 is 9/30/2029, and
+# the model reported 3/1/2029 — 29 months.  Snap to the most recent coupon date
+# at the bond's frequency instead (9/1/2029 semiannual, 3/1/2029 annual, both
+# the last coupon on or before the anniversary).
+#
+# And decide capitalisation by DATE rather than by year.  The year test happens
+# to give the right answer when the CAPI date falls on the later coupon, but a
+# March CAPI date on a semiannual bond would wrongly capitalise the September
+# coupon that follows it.
+_p("config.py", '''    @property
+    def capi_end_date(self) -> date:
+        """CAPI_END_DATE — last capitalized-interest payment date."""
+        return self._snap_to_payment_date(_edate(self.delivery, self.capi_term))''',
+   '''    def _last_coupon_on_or_before(self, d: date) -> date:
+        """
+        The most recent COUPON date on or before ``d``.
+
+        ``_snap_to_payment_date`` only ever returns the principal month, which
+        is right for a call (bonds are redeemed on a principal date) but wrong
+        for capitalized interest, which runs to an interest payment date — and
+        on a semiannual bond that is usually the OTHER month.
+        """
+        months = ((self.prin_maturity,) if self.coupon_frequency == 1
+                  else (self.prin_maturity, self.int_maturity))
+        candidates = [date(y, m, self.prin_maturity_day_senior)
+                      for y in (d.year, d.year - 1) for m in months]
+        return max(c for c in candidates if c <= d)
+
+    @property
+    def capi_end_date(self) -> date:
+        """
+        CAPI_END_DATE — the last interest payment funded from bond proceeds.
+
+        ``capi_term`` months from delivery, snapped back to the coupon date on
+        or before it: 36 months from 9/30/2026 is 9/30/2029, so the last
+        capitalized coupon is 9/1/2029 on a semiannual bond.
+        """
+        return self._last_coupon_on_or_before(_edate(self.delivery, self.capi_term))''')
+
+_p("debt_service.py", '''            capi = interest if (t.capi_end_year and d.year <= t.capi_end_year) else 0.0''',
+   '''            capi = interest if (t.capi_end and d <= t.capi_end) else 0.0''')
+
+_p("debt_service.py", '''            in_capi = (capi_end_year is not None
+                       and p.payment_date.year <= capi_end_year)''',
+   '''            in_capi = capi_end is not None and p.payment_date <= capi_end''')
+
+_p("debt_service.py", '''    def _apply_coupon_scale(tranche: "BondTranche", capi_end_year: int | None) -> None:''',
+   '''    def _apply_coupon_scale(tranche: "BondTranche", capi_end: "date | None") -> None:''')
+
+_p("debt_service.py", '''            self._apply_coupon_scale(tranche, capi_end_year)''',
+   '''            self._apply_coupon_scale(tranche, capi_end)''')
+
+_p("debt_service.py", '''        capi_end_year: int | None,''', '''        capi_end: "date | None",''')
+
+_p("debt_service.py", '''            capi_end_year=capi_end_year, dsrf_deposit=dsrf_deposit,''',
+   '''            capi_end=capi_end, dsrf_deposit=dsrf_deposit,''')
+
+_p("debt_service.py", '''    capi_end_year: int | None''', '''    capi_end: "date | None"''')
+
+_p("refunding.py", '''            capi_end_year=None,          # refunding bonds are not capitalized''',
+   '''            capi_end=None,               # refunding bonds are not capitalized''')
+
+_p("scenarios.py", '''                capi_end_year=cfg.capi_end_date.year, call_provisions=calls,''',
+   '''                capi_end=cfg.capi_end_date, call_provisions=calls,''')
+
+_p("main.py", '''        capi_end_year=cfg.capi_end_date.year,''',
+   '''        capi_end=cfg.capi_end_date,''')
+
+_p("build_notebook.py", '''    final_year=cfg.senior_final_year, capi_end_year=cfg.capi_end_date.year,''',
+   '''    final_year=cfg.senior_final_year, capi_end=cfg.capi_end_date,''')
+
+
+
+_p("debt_service.py", '''                if capi_end_year is not None and y <= capi_end_year:
+                    # Interest capitalized — no principal sized during the CAPI period.
+                    principals[y] = 0.0
+                    continue''',
+   '''                if (capi_end is not None
+                        and date(y, cfg.prin_maturity,
+                                 cfg.prin_maturity_day_senior) <= capi_end):
+                    # Interest capitalized — no principal sized during the CAPI period.
+                    principals[y] = 0.0
+                    continue''')
+
+
+
+# Final maturity is where the last PRINCIPAL is paid, not the last coupon.
+# `max(payment_date)` was right only while the schedule was emitted out of date
+# order and happened to end on the principal date; in date order a Utah bond
+# ends on the September coupon, which is not a maturity.
+_p("report.py", '''    sr_final = max((p.payment_date for p in senior.schedule), default=None)''',
+   '''    sr_final = max((p.payment_date for p in senior.schedule if p.principal),
+                   default=None)''')
+
+_p("report.py", '''    final_mat = max((p.payment_date for p in rb.schedule), default=None)''',
+   '''    final_mat = max((p.payment_date for p in rb.schedule if p.principal),
+                     default=None)''')
+
+
+
 # ── Stale Colorado vocabulary in docstrings / section comments ───────────────
 
 _p("memo.py", '''sources & uses), but states Colorado assumptions — mill levy (governing document cap +

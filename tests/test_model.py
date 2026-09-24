@@ -70,7 +70,7 @@ def senior(built):
         SeniorLienSizer(cfg, sm),
         name="Senior", rate=cfg.senior_interest_rate, coverage=cfg.dsc_senior,
         delivery=cfg.delivery, first_principal_year=cfg.senior_first_principal_year,
-        final_year=cfg.senior_final_year, capi_end_year=cfg.capi_end_date.year,
+        final_year=cfg.senior_final_year, capi_end=cfg.capi_end_date,
         call_provisions=calls)
 
 
@@ -126,11 +126,54 @@ def test_principal_falls_in_march_because_taxes_are_due_in_november():
     assert cfg.int_maturity == 9
 
 
-def test_call_and_capi_dates_land_on_payment_dates():
+def test_call_dates_land_on_principal_dates():
+    """Bonds are redeemed on a principal payment date, not on an anniversary of
+    closing."""
     cfg = ModelConfig()
-    for d in (cfg.capi_end_date, cfg.premium_call_date, cfg.par_call_date,
-              cfg.delivery_refunding):
+    for d in (cfg.premium_call_date, cfg.par_call_date, cfg.delivery_refunding):
         assert (d.month, d.day) == (cfg.prin_maturity, cfg.prin_maturity_day_senior)
+
+
+def test_capi_end_date_is_the_last_coupon_within_the_capi_term():
+    """36 months from 9/30/2026 is 9/30/2029, so the last capitalized coupon is
+    9/1/2029 on a semiannual bond — not 3/1/2029, which is 29 months.  It lands
+    on a COUPON date, which on a semiannual bond is usually the interest month,
+    never reachable by snapping to the principal month."""
+    cfg = ModelConfig(delivery=date(2026, 9, 30), capi_term=36)
+    assert cfg.capi_end_date == date(2029, 9, 1)
+    # Annual pays only in the principal month, so there the answer IS March.
+    annual = ModelConfig(delivery=date(2026, 9, 30), capi_term=36,
+                         interest_frequency="Annual")
+    assert annual.capi_end_date == date(2029, 3, 1)
+    # Always a coupon date, and never past the term.
+    from ut_pid_model.config import _edate
+    for delivery in (date(2026, 1, 15), date(2026, 5, 31), date(2026, 9, 30),
+                     date(2026, 12, 1)):
+        c = ModelConfig(delivery=delivery, capi_term=36)
+        assert c.capi_end_date.month in (c.prin_maturity, c.int_maturity)
+        assert c.capi_end_date <= _edate(delivery, 36)
+
+
+def test_final_maturity_is_the_last_principal_date(senior):
+    """Not the last coupon.  In date order a Utah bond ends on the September
+    coupon, which is not a maturity."""
+    last_pay = max(p.payment_date for p in senior.schedule)
+    last_prin = max(p.payment_date for p in senior.schedule if p.principal)
+    assert last_prin.month == 3
+    assert last_pay.month == 9 and last_pay > last_prin
+    assert senior.final_year == last_prin.year
+
+
+def test_capitalised_coupons_are_decided_by_date_not_by_year(built, senior):
+    """Every capitalized coupon falls on or before the CAPI end date, and the
+    first one after it is not capitalized."""
+    cfg, _dev, _sm = built
+    rows = senior.schedule
+    capi = [p for p in rows if p.capitalized_interest]
+    assert capi, "nothing capitalized"
+    assert all(p.payment_date <= cfg.capi_end_date for p in capi)
+    after = [p for p in rows if p.payment_date > cfg.capi_end_date]
+    assert after and all(p.capitalized_interest == 0 for p in after)
 
 
 def test_utah_reassesses_annually():
@@ -432,7 +475,7 @@ def test_projection_horizon_never_truncates_bond_sizing(senior):
         SeniorLienSizer(cfg, sm),
         name="Senior", rate=cfg.senior_interest_rate, coverage=cfg.dsc_senior,
         delivery=cfg.delivery, first_principal_year=cfg.senior_first_principal_year,
-        final_year=cfg.senior_final_year, capi_end_year=cfg.capi_end_date.year,
+        final_year=cfg.senior_final_year, capi_end=cfg.capi_end_date,
         call_provisions=calls)
     assert short.par_amount == pytest.approx(senior.par_amount)
 
@@ -457,7 +500,7 @@ def _size(cfg, dev=None):
         SeniorLienSizer(cfg, sm),
         name="S", rate=cfg.senior_interest_rate, coverage=cfg.dsc_senior,
         delivery=cfg.delivery, first_principal_year=cfg.senior_first_principal_year,
-        final_year=cfg.senior_final_year, capi_end_year=cfg.capi_end_date.year,
+        final_year=cfg.senior_final_year, capi_end=cfg.capi_end_date,
         call_provisions=calls)
 
 
@@ -638,7 +681,7 @@ def _sized(cfg):
         SeniorLienSizer(cfg, sm),
         name="Senior", rate=cfg.senior_interest_rate, coverage=cfg.dsc_senior,
         delivery=cfg.delivery, first_principal_year=cfg.senior_first_principal_year,
-        final_year=cfg.senior_final_year, capi_end_year=cfg.capi_end_date.year,
+        final_year=cfg.senior_final_year, capi_end=cfg.capi_end_date,
         call_provisions=calls)
     sf = SurplusFund(cfg, sm).build(senior, None, cfg.first_collection_year,
                                     senior.final_year)
@@ -827,7 +870,7 @@ def _sized_at(coupon, inputs_rate=None, built=None):
     kw = dict(name="Senior", rate=cfg.senior_interest_rate, coverage=cfg.dsc_senior,
               delivery=cfg.delivery,
               first_principal_year=cfg.senior_first_principal_year,
-              final_year=cfg.senior_final_year, capi_end_year=cfg.capi_end_date.year,
+              final_year=cfg.senior_final_year, capi_end=cfg.capi_end_date,
               call_provisions=CallProvisions(cfg.premium_call_date, cfg.par_call_date,
                                              cfg.premium_call_price))
     if coupon is not None:
@@ -873,7 +916,7 @@ def _priced_tranche(coupon_scale, term_bonds, yield_scale=None):
     return BondTranche(
         name="Senior", rate=0.05875, coverage=1.30, delivery=date(2026, 9, 1),
         first_principal_year=2027, final_year=2056, prin_month=3, prin_day=1,
-        capi_end_year=None, dsrf_deposit=0.0, dsrf_earn_rate=0.0,
+        capi_end=None, dsrf_deposit=0.0, dsrf_earn_rate=0.0,
         par_amount=10_000_000.0,
         call_provisions=CallProvisions(date(2031, 3, 1), date(2034, 3, 1), 103.0),
         coupon_scale=coupon_scale, yield_scale=yield_scale, term_bonds=term_bonds)
@@ -892,7 +935,7 @@ def _dbc_tranche(price_scale=None):
     par = sum(DBC_2056A.values())
     t = BondTranche(name="2056A", rate=0.0625, coverage=1.30, delivery=date(2026, 9, 30),
                     first_principal_year=2032, final_year=2056, prin_month=3, prin_day=1,
-                    capi_end_year=None, dsrf_deposit=0.0, dsrf_earn_rate=0.0,
+                    capi_end=None, dsrf_deposit=0.0, dsrf_earn_rate=0.0,
                     par_amount=par,
                     call_provisions=CallProvisions(date(2031, 3, 1), None, 103.0),
                     coupon_scale={2056: 0.0625}, term_bonds=[(2032, 2056, 0.06625)],
@@ -922,7 +965,7 @@ def test_interest_frequency_drives_the_schedule_and_the_price():
             SeniorLienSizer(cfg, sm), name="Senior", rate=cfg.senior_interest_rate,
             coverage=cfg.dsc_senior, delivery=cfg.delivery,
             first_principal_year=cfg.senior_first_principal_year,
-            final_year=cfg.senior_final_year, capi_end_year=cfg.capi_end_date.year,
+            final_year=cfg.senior_final_year, capi_end=cfg.capi_end_date,
             call_provisions=CallProvisions(cfg.premium_call_date, cfg.par_call_date,
                                            cfg.premium_call_price))
 
@@ -952,7 +995,7 @@ def test_interest_is_paid_once_a_year_when_annual_twice_when_semiannual():
             SeniorLienSizer(cfg, sm), name="Senior", rate=cfg.senior_interest_rate,
             coverage=cfg.dsc_senior, delivery=cfg.delivery,
             first_principal_year=cfg.senior_first_principal_year,
-            final_year=cfg.senior_final_year, capi_end_year=cfg.capi_end_date.year,
+            final_year=cfg.senior_final_year, capi_end=cfg.capi_end_date,
             call_provisions=CallProvisions(cfg.premium_call_date, cfg.par_call_date,
                                            cfg.premium_call_price))
 
@@ -1037,7 +1080,7 @@ def test_annual_frequency_reproduces_the_underwriters_oid():
     par = sum(DBC_2056A.values())
     t = BondTranche(name="2056A", rate=0.0625, coverage=1.30, delivery=date(2026, 9, 30),
                     first_principal_year=2032, final_year=2056, prin_month=3, prin_day=1,
-                    capi_end_year=None, dsrf_deposit=0.0, dsrf_earn_rate=0.0,
+                    capi_end=None, dsrf_deposit=0.0, dsrf_earn_rate=0.0,
                     par_amount=par,
                     call_provisions=CallProvisions(date(2031, 3, 1), None, 103.0),
                     coupon_scale={2056: 0.0625}, term_bonds=[(2032, 2056, 0.06625)],
@@ -1304,7 +1347,7 @@ def test_par_amount_column_overrides_the_revenue_wrap(tmp_path):
         SeniorLienSizer(cfg, sm),
         name="Senior", rate=cfg.senior_interest_rate, coverage=cfg.dsc_senior,
         delivery=cfg.delivery, first_principal_year=cfg.senior_first_principal_year,
-        final_year=cfg.senior_final_year, capi_end_year=cfg.capi_end_date.year,
+        final_year=cfg.senior_final_year, capi_end=cfg.capi_end_date,
         call_provisions=CallProvisions(cfg.premium_call_date, cfg.par_call_date,
                                        cfg.premium_call_price),
         par_schedule=cfg.senior_par_schedule)

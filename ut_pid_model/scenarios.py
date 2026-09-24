@@ -93,7 +93,7 @@ def build_scenarios(
                 delivery=cfg.delivery,
                 first_principal_year=senior_first_principal_year,
                 final_year=senior_final_year,
-                capi_end_year=cfg.capi_end_date.year, call_provisions=calls,
+                capi_end=cfg.capi_end_date, call_provisions=calls,
                 reoffering_yield=cfg.senior_reoffering_yield,
                 coupon_scale=cfg.senior_coupon_scale,
                 yield_scale=cfg.senior_yield_scale,

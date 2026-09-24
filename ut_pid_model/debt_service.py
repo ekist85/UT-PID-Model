@@ -151,7 +151,7 @@ class BondTranche:
     final_year: int
     prin_month: int
     prin_day: int
-    capi_end_year: int | None
+    capi_end: "date | None"
     dsrf_deposit: float
     dsrf_earn_rate: float
     par_amount: float = 0.0
@@ -325,7 +325,7 @@ class SeniorLienSizer:
         first_principal_year: int,
         final_year: int,
         *,
-        capi_end_year: int | None,
+        capi_end: "date | None",
         dsrf_deposit: float,
         release_surplus: bool = True,
         call_provisions: Optional[CallProvisions] = None,
@@ -350,7 +350,9 @@ class SeniorLienSizer:
             principals: dict[int, float] = {}
             balance = par
             for y in principal_years:
-                if capi_end_year is not None and y <= capi_end_year:
+                if (capi_end is not None
+                        and date(y, cfg.prin_maturity,
+                                 cfg.prin_maturity_day_senior) <= capi_end):
                     # Interest capitalized — no principal sized during the CAPI period.
                     principals[y] = 0.0
                     continue
@@ -459,7 +461,7 @@ class SeniorLienSizer:
             name=name, rate=rate, coverage=coverage, delivery=delivery,
             first_principal_year=first_principal_year, final_year=final_year,
             prin_month=cfg.prin_maturity, prin_day=cfg.prin_maturity_day_senior,
-            capi_end_year=capi_end_year, dsrf_deposit=dsrf_deposit,
+            capi_end=capi_end, dsrf_deposit=dsrf_deposit,
             dsrf_earn_rate=cfg.interest_earn_rate, par_amount=par,
             call_provisions=call_provisions, reoffering_yield=reoffering_yield,
             coupon_scale=coupon_scale, yield_scale=yield_scale, term_bonds=term_bonds,
@@ -468,11 +470,11 @@ class SeniorLienSizer:
         tranche.schedule = self._build_schedule(tranche, principals, release_surplus)
         if coupon_scale:
             # Pricing-day: re-derive interest from per-maturity coupons.
-            self._apply_coupon_scale(tranche, capi_end_year)
+            self._apply_coupon_scale(tranche, capi_end)
         return tranche
 
     @staticmethod
-    def _apply_coupon_scale(tranche: "BondTranche", capi_end_year: int | None) -> None:
+    def _apply_coupon_scale(tranche: "BondTranche", capi_end: "date | None") -> None:
         """
         Recompute each period's interest from per-maturity coupons (the schedule
         is sized with the flat rate; on pricing day coupons differ by maturity).
@@ -494,8 +496,7 @@ class SeniorLienSizer:
         for p in tranche.schedule:
             annual_int = sum(P * tranche.coupon_for(y) for y, P in outstanding.items())
             p.interest = annual_int * days_30_360(prev, p.payment_date) / 360.0
-            in_capi = (capi_end_year is not None
-                       and p.payment_date.year <= capi_end_year)
+            in_capi = capi_end is not None and p.payment_date <= capi_end
             p.capitalized_interest = p.interest if in_capi else 0.0
             if p.principal:
                 outstanding.pop(p.payment_date.year, None)
@@ -529,7 +530,7 @@ class SeniorLienSizer:
         prev = t.delivery
         for d in dates:
             interest = balance * rate * days_30_360(prev, d) / 360.0
-            capi = interest if (t.capi_end_year and d.year <= t.capi_end_year) else 0.0
+            capi = interest if (t.capi_end and d <= t.capi_end) else 0.0
             is_prin = d.month == t.prin_month
             p = principals.get(d.year, 0.0) if is_prin else 0.0
             surplus_rel = (t.dsrf_deposit if (release_surplus and is_prin
