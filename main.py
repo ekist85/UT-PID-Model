@@ -124,6 +124,10 @@ def run_model(export: bool = True, output_dir: str | None = None,
     else:
         senior = _sizer.size(dsrf_deposit=cfg.senior_dsrf_deposit, **_size_kwargs)
     print(f"\n[3] Senior new-money bonds sized: par ${senior.par_amount:,.0f}")
+
+    # The assessment series carry costs of issuance at the rate the dollar COI
+    # represents on the senior par, so the senior has to be sized first.
+    cfg._senior_par_for_coi = senior.par_amount
     print(f"    Final maturity {senior.final_year}  |  "
           f"max annual net DS ${senior.max_annual_ds:,.0f}")
     print(f"    DSRF (computed, 3-prong): ${senior.dsrf_deposit:,.0f}")
@@ -230,6 +234,28 @@ def run_model(export: bool = True, output_dir: str | None = None,
         print(f"\n    TOTAL developer reimbursement (first + refunding): "
               f"${total_reimb:,.0f}")
 
+    # ── 8b. Special assessment program (Inputs!ASSESSMENT_BONDS) ───────────
+    # Sized off the same lot deliveries and home closings as the ad valorem
+    # model, but secured by liens on the lots rather than by the levy — so it
+    # neither consumes room under the fifteen-mill cap nor reduces the revenue
+    # the senior lien is wrapped around.
+    assessment = None
+    if cfg.assessment_bonds_on:
+        from ut_pid_model.assessment_bonds import AssessmentBondAnalysis
+        assessment = AssessmentBondAnalysis(cfg, sm).run()
+        if assessment.enabled:
+            print(f"\n[8b] Special assessment bonds: {len(assessment.series)} series, "
+                  f"par ${assessment.total_par:,.0f} on {assessment.total_lots:,.0f} lots "
+                  f"(${assessment.total_par / max(assessment.total_lots, 1):,.0f}/lot)")
+            print(f"     Net project proceeds: ${assessment.total_proceeds:,.0f}  |  "
+                  f"value-to-lien {assessment.weighted_value_to_lien:,.2f}x "
+                  f"({'all series pass' if assessment.all_meet_value_to_lien else 'SOME SERIES FAIL'})")
+            print(f"     Homeowner carries ${assessment.resident_balance_basis:,.0f} per lot — "
+                  f"${assessment.resident_annual_installment():,.0f}/yr")
+        else:
+            print("\n[8b] Special assessment bonds: enabled, but no series sized "
+                  "(no assessment amounts and no lot deliveries to assess).")
+
     # ── 8. Exports ─────────────────────────────────────────────────────────
     # One flat folder holds the four deliverables: inputs workbook, model
     # output workbook, forecast exhibits, and the reimbursement memo.
@@ -241,7 +267,7 @@ def run_model(export: bool = True, output_dir: str | None = None,
         base = deliverable_basename(cfg, lots=(dev.total_lots if dev is not None else None))
         xlsx = build_excel_report(
             cfg, sm, senior, su, refunding, sub, surplus, dev=dev,
-            series_c=series_c, contribution=contribution,
+            series_c=series_c, contribution=contribution, assessment=assessment,
             output_path=f"{output_dir}/{base}.xlsx",
         )
         # Forecast exhibits — base case + development stress scenarios (80%/45%).
@@ -255,7 +281,7 @@ def run_model(export: bool = True, output_dir: str | None = None,
         # Tierra-style reimbursement memo (HTML), populated from the model.
         memo_html = build_memo_html(
             cfg, sm, senior, su, sub, refunding, dev=dev,
-            series_c=series_c, contribution=contribution,
+            series_c=series_c, contribution=contribution, assessment=assessment,
             output_path=f"{output_dir}/{base} - Memo.html",
             developer=cfg.developer or "[Developer / Master Developer]")
         print(f"\n[9] Output written to '{output_dir}/':")
@@ -277,7 +303,8 @@ def run_model(export: bool = True, output_dir: str | None = None,
     print("=" * 72)
 
     return {"cfg": cfg, "dev": dev, "sm": sm, "senior": senior,
-            "su": su, "sub": sub, "refunding": refunding}
+            "su": su, "sub": sub, "refunding": refunding,
+            "assessment": assessment}
 
 
 if __name__ == "__main__":

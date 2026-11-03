@@ -84,8 +84,68 @@ def _md(d):
     return f"{d.month}/{d.day}/{d.year}"
 
 
+def _assessment_section(cfg, assessment) -> str:
+    """
+    The special assessment program, stated beside the mill levy financing.
+
+    Empty string when the program is off — a memo for a deal with no
+    assessments should not carry a heading explaining that there are none.
+    """
+    if assessment is None or not getattr(assessment, "enabled", False):
+        return ""
+    rows = assessment.effective_tax_rate_rows()
+    avg = rows[-1] if rows else None
+    series = "".join(
+        f"<tr><td class='l'>Series {s.series_id}</td>"
+        f"<td>{s.dated_date:%m/%d/%Y}</td>"
+        f"<td>{s.window_start}&ndash;{s.window_end}</td>"
+        f"<td>{s.lots:,.0f}</td>"
+        f"<td>{_money(s.lien_per_lot)}</td>"
+        f"<td>{_money(s.par_amount)}</td>"
+        f"<td>{s.value_to_lien:,.2f}x</td></tr>"
+        for s in assessment.series)
+    mills = float(getattr(cfg, "mill_levy_ds_target", 0.0) or 0.0)
+    ratio = float(getattr(cfg, "resid_taxable_ratio", 0.55) or 0.55)
+    burden = ""
+    if avg:
+        price = float(avg["home_price"])
+        levy = price * ratio * mills / 1000.0
+        inst = float(avg["annual_installment"])
+        burden = (
+            f"<p style=\"margin-top:10px\">On an average home of {_money(price)}, the "
+            f"assessment installment is {_money(inst)} a year on the "
+            f"{_money(avg['resident_assessment'])} left on the lot. The district&rsquo;s "
+            f"mill levy on the same home is {_money(levy)}, so the total annual district "
+            f"cost to the homeowner is <strong>{_money(levy + inst)}</strong> &mdash; "
+            f"{(levy + inst) / price:.3%} of the home&rsquo;s price.</p>")
+    return f"""
+<h2>Special Assessment Bonds</h2>
+<p>In addition to the ad valorem financing above, the District may levy assessments on the
+benefited lots under Utah&rsquo;s Assessment Area Act (UCA Title&nbsp;11, Chapter&nbsp;42) and
+issue bonds secured by those liens. The assessment is a lien on the lot rather than a charge
+against the levy, so the par below does not consume capacity under the &sect;&nbsp;17D-4-303
+fifteen-mill cap and the installments are not netted from the revenue securing the senior and
+subordinate liens.</p>
+<p>The program issues {len(assessment.series)} series totalling
+<strong>{_money(assessment.total_par)}</strong> against {assessment.total_lots:,.0f} lots
+&mdash; {_money(assessment.total_par / max(assessment.total_lots, 1))} per lot &mdash; at
+{cfg.assessment_rate:.3%} over {cfg.assessment_term_yrs} years, with
+{cfg.assessment_capi_years} year(s) of capitalized interest. After costs of issuance,
+capitalized interest and the reserve, net project proceeds are
+<strong>{_money(assessment.total_proceeds)}</strong>. Each series is dated
+{cfg.assessment_fund_timing:g} year(s) before the first lot delivery it funds and funds
+{cfg.assessment_fund_term} year(s) of deliveries.</p>
+<table class="data">
+  <tr><th>Series</th><th>Dated</th><th>Funds Deliveries</th><th>Lots</th>
+      <th>Assessment / Lot</th><th>Par Amount</th><th>Value to Lien</th></tr>
+  {series}
+</table>
+{burden}
+"""
+
+
 def build_memo_html(cfg, sm, senior, su, sub=None, refunding=None, dev=None,
-                    series_c=None, contribution=None,
+                    series_c=None, contribution=None, assessment=None,
                     output_path: str = "output/ut_pid_model_memo.html",
                     developer: str = "[Developer / Master Developer]") -> str:
     """Render the reimbursement memo HTML from the model objects and write it.
@@ -95,6 +155,7 @@ def build_memo_html(cfg, sm, senior, su, sub=None, refunding=None, dev=None,
     ``refunding`` the RefundingResult (optional), ``dev`` DeveloperProjections.
     """
     dev = dev or sm.dev
+    assessment_section = _assessment_section(cfg, assessment)
     _t = date.today()
     today = f"{_t.strftime('%B')} {_t.day}, {_t.year}"
     developer = developer if developer and developer != "[Developer / Master Developer]" \
@@ -420,6 +481,8 @@ underwriter&rsquo;s discount and costs of issuance.</p>
 applies its sources as follows:</p>
 
 {uses_table}
+
+{assessment_section}
 
 <p style="margin-top:12px">Please call us if you have any questions or if we can be of any further assistance.</p>
 <div class="sig">Sincerely,<br><br>Evan Kist, CFA&nbsp;&nbsp;|&nbsp;&nbsp;Tierra Financial Advisors<br>

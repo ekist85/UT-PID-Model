@@ -2950,6 +2950,337 @@ _p("__init__.py", '''__all__ = [
     "viridian_farm_projections",''')
 
 
+# ── The special assessment issuance program (Inputs!ASSESSMENT_BONDS) ───────
+# A Utah PID may assess the benefited lots under the Assessment Area Act (UCA
+# Title 11, Chapter 42) and issue bonds secured by those liens, alongside the
+# ad valorem senior / subordinate liens.  The engine is ported from Arizona by
+# tools/port_assessment_from_arizona.py; these are the cells that drive it.
+
+_p("config.py", '''    district_cost_start_year: Optional[int] = None   # DISTRICT_COST_START_YEAR''',
+   '''    district_cost_start_year: Optional[int] = None   # DISTRICT_COST_START_YEAR
+
+    # ── Special assessment issuance program ─────────────────────────────────
+    # Off unless ASSESSMENT_BONDS says Yes.  An assessment is a lien on the lot,
+    # not a charge on the levy, so none of this touches the mill levy sizing:
+    # the par does not consume room under the § 17D-4-303 cap and the
+    # installments are not netted from the revenue the senior lien wraps.
+    assessment_bonds: str = "No"        # ASSESSMENT_BONDS (Yes/No)
+    assessment_rate: float = 0.07       # BONDRATE_SPECIAL
+    assessment_capi_years: int = 3      # CAPI_YEARS_SA (separate from CAPI_TERM)
+    assessment_dsrf: str = "Yes"        # DSRF_SA (Yes/No)
+    assessment_dsrf_pct: float = 1.0    # DSRF_SA_FUND_PRC — share of the 3-prong amount funded
+    assessment_fund_timing: float = 1.0 # ASSESSMENT_FUND_TIMING — years a series is dated ahead of the lots it funds
+    assessment_fund_term: int = 3       # ASSESSMENT_FUND_TERM — delivery years each series funds
+    #: {product name: {"developer", "resident", "ltv", "installment"}} from the
+    #: Development Inputs 'Special Assessment' block; empty ⇒ the engine falls
+    #: back to the whole-program figures above.
+    assessment_products: dict = field(default_factory=dict)
+    #: Senior par the dollar COI was quoted against, set by the model run so an
+    #: assessment series can carry COI at the same RATE (see the Arizona port).
+    _senior_par_for_coi: float = 0.0
+
+    @property
+    def assessment_term_yrs(self) -> int:
+        """Assessment installments run the senior lien's term."""
+        return int(self.final_mat_yrs)
+
+    @property
+    def assessment_bonds_on(self) -> bool:
+        return str(self.assessment_bonds).strip().lower().startswith("y")''')
+
+_p("inputs.py", '''    ("District Costs", "First Year District Costs Are Charged", "DISTRICT_COST_START_YEAR", "district_cost_start_year", "int", "blank ⇒ two years after closing"),
+]''',
+   '''    ("District Costs", "First Year District Costs Are Charged", "DISTRICT_COST_START_YEAR", "district_cost_start_year", "int", "blank ⇒ two years after closing"),
+
+    ("Special Assessment Issuance Program", "Assessment Bonds", "ASSESSMENT_BONDS", "assessment_bonds", "yesno", "Yes/No — Yes = also size special assessment bonds (separate from the mill levy bonds); No = not sized, nothing in the memo or workbook"),
+    ("Special Assessment Issuance Program", "Special Assessment Interest Rate", "BONDRATE_SPECIAL", "assessment_rate", "pct", "Assessment bonds amortize over the Final Maturity above at this rate"),
+    ("Special Assessment Issuance Program", "Capitalized Interest (yrs)", "CAPI_YEARS_SA", "assessment_capi_years", "int", "Years of interest on each assessment series funded from bond proceeds (separate from the mill levy Capitalized Interest); lot-owner installments start after this period"),
+    ("Special Assessment Issuance Program", "Debt Service Reserve Fund", "DSRF_SA", "assessment_dsrf", "yesno", "Yes/No"),
+    ("Special Assessment Issuance Program", "Debt Service Reserve Fund % of Amount", "DSRF_SA_FUND_PRC", "assessment_dsrf_pct", "pct", "share of the three-prong reserve actually funded from proceeds"),
+    ("Special Assessment Issuance Program", "Timing to Fund Lot Construction (Years Prior)", "ASSESSMENT_FUND_TIMING", "assessment_fund_timing", "float", "Year(s) prior to the first lot delivery it funds that each Developer Bond series is dated (funds in hand to build the lots)"),
+    ("Special Assessment Issuance Program", "Roll Forward Years to Fund Future Lot Deliveries", "ASSESSMENT_FUND_TERM", "assessment_fund_term", "int", "Years of future lot-delivery phases each Developer Bond series funds (3 = one series covers delivery years 1-3, the next 4-6, …)"),
+]''')
+
+
+# ── Per-product fields the Utah Development Inputs sheet carries ────────────
+# Pacing Per Month paces a grid the user left blank; the Existing Development
+# block records what is already on the roll when the district is formed.  Both
+# ride on ProductLine so a stressed scenario carries them unchanged.
+
+_p("development.py", '''    asp_base: float = 515_000                                      # base average selling price
+    asp_base_year: int = 2024''',
+   '''    asp_base: float = 515_000                                      # base average selling price
+    asp_base_year: int = 2024
+    #: Units absorbed per month.  Paces a Lot Delivery or Home Closings column
+    #: left blank on the Development Inputs sheet; 0 ⇒ that grid must be entered.
+    pacing_per_month: float = 0.0
+    #: Already on the roll when the district is formed (Existing Development).
+    existing_homes: int = 0
+    existing_home_asp: float = 0.0      # blank ⇒ asp_base
+    existing_lots: int = 0''')
+
+_p("development.py", '''    def stressed(self, pace_factor: float) -> "ProductLine":
+        if pace_factor >= 1.0:
+            return ProductLine(self.name, self.existing_units,
+                               dict(self.lot_deliveries), dict(self.home_closings),
+                               self.asp_base, self.asp_base_year)
+        return ProductLine(
+            self.name, self.existing_units,
+            _slow_schedule(self.lot_deliveries, pace_factor),
+            _slow_schedule(self.home_closings, pace_factor),
+            self.asp_base, self.asp_base_year)''',
+   '''    @property
+    def existing_home_price(self) -> float:
+        """ASP of the homes already standing — the Base ASP unless overridden."""
+        return self.existing_home_asp or self.asp_base
+
+    def stressed(self, pace_factor: float) -> "ProductLine":
+        """A slower copy.  Only the SCHEDULES slow down: what is already built
+        and what the product ultimately sells are unchanged by the pace."""
+        carry = dict(asp_base=self.asp_base, asp_base_year=self.asp_base_year,
+                     pacing_per_month=self.pacing_per_month,
+                     existing_homes=self.existing_homes,
+                     existing_home_asp=self.existing_home_asp,
+                     existing_lots=self.existing_lots)
+        if pace_factor >= 1.0:
+            return ProductLine(self.name, self.existing_units,
+                               dict(self.lot_deliveries), dict(self.home_closings),
+                               **carry)
+        return ProductLine(
+            self.name, self.existing_units,
+            _slow_schedule(self.lot_deliveries, pace_factor),
+            _slow_schedule(self.home_closings, pace_factor),
+            **carry)''')
+
+
+# ── The Development Inputs sheet is Utah's own ──────────────────────────────
+# Colorado's sheet is a product setup block and two grids.  Utah's adds Pacing
+# Per Month, the per-product Special Assessment sizing block, an Existing
+# Development block and an aggregate Total column, and finds every block by its
+# label rather than a fixed row — so the layout lives in a Utah-only module
+# rather than as a patch against a Colorado function it no longer resembles.
+
+_p("inputs.py", '''def _write_dev_sheet(ws, dev: DeveloperProjections):''',
+   '''def _write_dev_sheet(ws, dev: DeveloperProjections, cfg=None):
+    """Utah's Development Inputs layout — see ut_pid_model/development_inputs.py."""
+    from .development_inputs import write_dev_sheet
+    return write_dev_sheet(ws, dev, cfg)
+
+
+def _write_dev_sheet_colorado(ws, dev: DeveloperProjections):''')
+
+_p("inputs.py", '''def _load_dev_sheet(wb, overrides_dev) -> DeveloperProjections:''',
+   '''def _load_dev_sheet(wb, overrides_dev, cfg=None) -> DeveloperProjections:
+    """Utah's Development Inputs reader — see ut_pid_model/development_inputs.py."""
+    from .development_inputs import load_dev_sheet
+    return load_dev_sheet(wb, overrides_dev, cfg)
+
+
+def _load_dev_sheet_colorado(wb, overrides_dev) -> DeveloperProjections:''')
+
+_p("inputs.py", '''    cfg = ModelConfig(**overrides_cfg)
+    dev = _load_dev_sheet(wb, overrides_dev)
+    return cfg, dev''',
+   '''    cfg = ModelConfig(**overrides_cfg)
+    # The Development Inputs sheet also carries the per-product assessment
+    # sizing assumptions, so it is read with the config in hand.
+    dev = _load_dev_sheet(wb, overrides_dev, cfg)
+    return cfg, dev''')
+
+
+# ── Wiring the assessment program into the run and the workbook ─────────────
+
+_p("report.py", '''def build_excel_report(
+    cfg: ModelConfig,
+    sm,
+    senior,
+    first_su,
+    refunding_result=None,
+    sub_result=None,
+    surplus_fund=None,
+    dev=None,
+    series_c=None,
+    contribution=None,
+    output_path: str = "output/ut_pid_model_output.xlsx",
+) -> str:''',
+   '''def build_excel_report(
+    cfg: ModelConfig,
+    sm,
+    senior,
+    first_su,
+    refunding_result=None,
+    sub_result=None,
+    surplus_fund=None,
+    dev=None,
+    series_c=None,
+    contribution=None,
+    assessment=None,
+    output_path: str = "output/ut_pid_model_output.xlsx",
+) -> str:''')
+
+_p("report.py", '''    if series_c is not None:
+        _build_series_c_sheet(wb.create_sheet("Series C Cash-Flow"), cfg, series_c)''',
+   '''    if series_c is not None:
+        _build_series_c_sheet(wb.create_sheet("Series C Cash-Flow"), cfg, series_c)
+
+    # The special assessment program — a separate security from the mill levy,
+    # so it gets its own tabs rather than rows on the senior sheets.
+    if assessment is not None and assessment.enabled:
+        from .assessment_report import (build_assessment_sheet,
+                                        build_assessment_cashflow_sheet,
+                                        build_assessment_homeowner_sheet)
+        build_assessment_sheet(wb.create_sheet("Assessment Bonds"), cfg, assessment,
+                               sm=sm, dev=dev)
+        build_assessment_cashflow_sheet(wb.create_sheet("Assessment Cash Flow"),
+                                        cfg, assessment)
+        build_assessment_homeowner_sheet(wb.create_sheet("Assessment - Homeowner Cost"),
+                                         cfg, assessment)''')
+
+_p("main.py", '''    print(f"\\n[3] Senior new-money bonds sized: par ${senior.par_amount:,.0f}")''',
+   '''    print(f"\\n[3] Senior new-money bonds sized: par ${senior.par_amount:,.0f}")
+
+    # The assessment series carry costs of issuance at the rate the dollar COI
+    # represents on the senior par, so the senior has to be sized first.
+    cfg._senior_par_for_coi = senior.par_amount''')
+
+_p("main.py", '''        xlsx = build_excel_report(
+            cfg, sm, senior, su, refunding, sub, surplus, dev=dev,
+            series_c=series_c, contribution=contribution,
+            output_path=f"{output_dir}/{base}.xlsx",
+        )''',
+   '''        xlsx = build_excel_report(
+            cfg, sm, senior, su, refunding, sub, surplus, dev=dev,
+            series_c=series_c, contribution=contribution, assessment=assessment,
+            output_path=f"{output_dir}/{base}.xlsx",
+        )''')
+
+_p("main.py", '''    # ── 8. Exports ─────────────────────────────────────────────────────────''',
+   '''    # ── 8b. Special assessment program (Inputs!ASSESSMENT_BONDS) ───────────
+    # Sized off the same lot deliveries and home closings as the ad valorem
+    # model, but secured by liens on the lots rather than by the levy — so it
+    # neither consumes room under the fifteen-mill cap nor reduces the revenue
+    # the senior lien is wrapped around.
+    assessment = None
+    if cfg.assessment_bonds_on:
+        from ut_pid_model.assessment_bonds import AssessmentBondAnalysis
+        assessment = AssessmentBondAnalysis(cfg, sm).run()
+        if assessment.enabled:
+            print(f"\\n[8b] Special assessment bonds: {len(assessment.series)} series, "
+                  f"par ${assessment.total_par:,.0f} on {assessment.total_lots:,.0f} lots "
+                  f"(${assessment.total_par / max(assessment.total_lots, 1):,.0f}/lot)")
+            print(f"     Net project proceeds: ${assessment.total_proceeds:,.0f}  |  "
+                  f"value-to-lien {assessment.weighted_value_to_lien:,.2f}x "
+                  f"({'all series pass' if assessment.all_meet_value_to_lien else 'SOME SERIES FAIL'})")
+            print(f"     Homeowner carries ${assessment.resident_balance_basis:,.0f} per lot — "
+                  f"${assessment.resident_annual_installment():,.0f}/yr")
+        else:
+            print("\\n[8b] Special assessment bonds: enabled, but no series sized "
+                  "(no assessment amounts and no lot deliveries to assess).")
+
+    # ── 8. Exports ─────────────────────────────────────────────────────────''')
+
+_p("main.py", '''    return {"cfg": cfg, "dev": dev, "sm": sm, "senior": senior,
+            "su": su, "sub": sub, "refunding": refunding}''',
+   '''    return {"cfg": cfg, "dev": dev, "sm": sm, "senior": senior,
+            "su": su, "sub": sub, "refunding": refunding,
+            "assessment": assessment}''')
+
+
+# ── The memo states the assessment program beside the mill levy financing ───
+
+_p("memo.py", '''def build_memo_html(cfg, sm, senior, su, sub=None, refunding=None, dev=None,
+                    series_c=None, contribution=None,''',
+   '''def build_memo_html(cfg, sm, senior, su, sub=None, refunding=None, dev=None,
+                    series_c=None, contribution=None, assessment=None,''')
+
+_p("memo.py", '''{uses_table}
+
+<p style="margin-top:12px">Please call us if you have any questions''',
+   '''{uses_table}
+
+{assessment_section}
+
+<p style="margin-top:12px">Please call us if you have any questions''')
+
+_p("memo.py", '''    dev = dev or sm.dev
+    _t = date.today()''',
+   '''    dev = dev or sm.dev
+    assessment_section = _assessment_section(cfg, assessment)
+    _t = date.today()''')
+
+_p("memo.py", '''def build_memo_html(cfg, sm, senior, su, sub=None, refunding=None, dev=None,
+                    series_c=None, contribution=None, assessment=None,''',
+   '''def _assessment_section(cfg, assessment) -> str:
+    """
+    The special assessment program, stated beside the mill levy financing.
+
+    Empty string when the program is off — a memo for a deal with no
+    assessments should not carry a heading explaining that there are none.
+    """
+    if assessment is None or not getattr(assessment, "enabled", False):
+        return ""
+    rows = assessment.effective_tax_rate_rows()
+    avg = rows[-1] if rows else None
+    series = "".join(
+        f"<tr><td class='l'>Series {s.series_id}</td>"
+        f"<td>{s.dated_date:%m/%d/%Y}</td>"
+        f"<td>{s.window_start}&ndash;{s.window_end}</td>"
+        f"<td>{s.lots:,.0f}</td>"
+        f"<td>{_money(s.lien_per_lot)}</td>"
+        f"<td>{_money(s.par_amount)}</td>"
+        f"<td>{s.value_to_lien:,.2f}x</td></tr>"
+        for s in assessment.series)
+    mills = float(getattr(cfg, "mill_levy_ds_target", 0.0) or 0.0)
+    ratio = float(getattr(cfg, "resid_taxable_ratio", 0.55) or 0.55)
+    burden = ""
+    if avg:
+        price = float(avg["home_price"])
+        levy = price * ratio * mills / 1000.0
+        inst = float(avg["annual_installment"])
+        burden = (
+            f"<p style=\\"margin-top:10px\\">On an average home of {_money(price)}, the "
+            f"assessment installment is {_money(inst)} a year on the "
+            f"{_money(avg['resident_assessment'])} left on the lot. The district&rsquo;s "
+            f"mill levy on the same home is {_money(levy)}, so the total annual district "
+            f"cost to the homeowner is <strong>{_money(levy + inst)}</strong> &mdash; "
+            f"{(levy + inst) / price:.3%} of the home&rsquo;s price.</p>")
+    return f"""
+<h2>Special Assessment Bonds</h2>
+<p>In addition to the ad valorem financing above, the District may levy assessments on the
+benefited lots under Utah&rsquo;s Assessment Area Act (UCA Title&nbsp;11, Chapter&nbsp;42) and
+issue bonds secured by those liens. The assessment is a lien on the lot rather than a charge
+against the levy, so the par below does not consume capacity under the &sect;&nbsp;17D-4-303
+fifteen-mill cap and the installments are not netted from the revenue securing the senior and
+subordinate liens.</p>
+<p>The program issues {len(assessment.series)} series totalling
+<strong>{_money(assessment.total_par)}</strong> against {assessment.total_lots:,.0f} lots
+&mdash; {_money(assessment.total_par / max(assessment.total_lots, 1))} per lot &mdash; at
+{cfg.assessment_rate:.3%} over {cfg.assessment_term_yrs} years, with
+{cfg.assessment_capi_years} year(s) of capitalized interest. After costs of issuance,
+capitalized interest and the reserve, net project proceeds are
+<strong>{_money(assessment.total_proceeds)}</strong>. Each series is dated
+{cfg.assessment_fund_timing:g} year(s) before the first lot delivery it funds and funds
+{cfg.assessment_fund_term} year(s) of deliveries.</p>
+<table class="data">
+  <tr><th>Series</th><th>Dated</th><th>Funds Deliveries</th><th>Lots</th>
+      <th>Assessment / Lot</th><th>Par Amount</th><th>Value to Lien</th></tr>
+  {series}
+</table>
+{burden}
+"""
+
+
+def build_memo_html(cfg, sm, senior, su, sub=None, refunding=None, dev=None,
+                    series_c=None, contribution=None, assessment=None,''')
+
+_p("main.py", '''        memo_html = build_memo_html(
+            cfg, sm, senior, su, sub, refunding, dev=dev,
+            series_c=series_c, contribution=contribution,''',
+   '''        memo_html = build_memo_html(
+            cfg, sm, senior, su, sub, refunding, dev=dev,
+            series_c=series_c, contribution=contribution, assessment=assessment,''')
+
+
 # ── Appended Utah-only code ──────────────────────────────────────────────────
 
 APPENDS = {

@@ -103,6 +103,27 @@ git -C ../CO-Metro-District-Model checkout -B ut-debt-structure a5d8c31
 git -C ../CO-Metro-District-Model cherry-pick 16b4edd     # .py files merge clean
 ```
 
+### The two Utah-only modules
+
+`assessment_bonds.py` is generated the same way, but from **Arizona**:
+`tools/port_assessment_from_arizona.py --source ../AZ-CFD-Model`. A special
+assessment is the same arithmetic in both states — a lien per lot, level
+installments, a payoff at conversion, a value-to-lien test — so Utah ports it
+rather than reimplementing it, and `test_assessment_engine_is_up_to_date_with_arizona`
+fails when Arizona moves. What Utah changes is the statutory framing (the
+Assessment Area Act, UCA Title 11 Ch. 42, not A.R.S. § 48-721), the development
+feed (Utah reads `DeveloperProjections.products` directly instead of an
+assessed-valuation model's roll sections) and the cost assumptions (Utah enters
+an underwriter's discount percentage and a **dollar** COI, so each series
+carries COI at the rate that dollar figure represents on the senior par).
+
+`development_inputs.py` and `assessment_report.py` have no upstream at all and
+are authored here. The Development Inputs sheet in particular diverged too far
+from Colorado's to stay a patch: Utah's carries Pacing Per Month, a per-product
+Special Assessment block, an Existing Development block and an aggregate Total
+column, and finds every block by its **label** rather than by a fixed row — so
+inserting a row no longer shifts which column a product is read from.
+
 Colorado's optional
 **Series C** third lien ports across as code but is carried **inert**: the
 `SIZE_SERIES_C` toggle stays `"No"` and its rows are kept off the Utah Inputs
@@ -188,9 +209,13 @@ ut_pid_model/
   forecast_report.py # CPA-style forecast exhibits (Exhibit A/B/C, each -1..7)
   scenarios.py       # base + development stress cases (slowed absorption)
   memo.py            # Tierra-style reimbursement memo (HTML)
+  assessment_bonds.py      # special assessment sizing (ported from Arizona)
+  assessment_report.py     # the three Assessment tabs
+  development_inputs.py    # the Development Inputs sheet (Utah's own layout)
 main.py                        # console run + exports
 build_notebook.py              # regenerates the notebook
 tools/port_from_colorado.py    # re-port from co_metro_model
+tools/port_assessment_from_arizona.py   # re-port assessment_bonds from cfd_model
 ut_pid_model_notebook.ipynb    # narrated walkthrough with charts & scenarios
 tests/test_model.py            # statute + reference-deal regression tests
 docs/utah-vs-colorado.md       # the statutory walk-through
@@ -362,6 +387,16 @@ long-form prose dates, as a letter should.
   annual reassessment → adjustments → gross market value → taxable value).
   The Summary tabs and the bond sizing read from them, so the presentation and
   the arithmetic cannot disagree.
+### The Development Inputs sheet
+
+Products sit in columns **D..K**, with an aggregate **Total** in C. Leave a
+product's Lot Delivery or Home Closings column blank and it is **prorated from
+Pacing Per Month** — `pace x 12` units a year, lots from the first delivery
+year, homes from the year after and never ahead of the lots on the ground, each
+capped by Total Units. An entered grid always wins; nothing is overwritten.
+Enter a year only in the **Total** column and it is split across the products by
+their share of the units still to come.
+
 * `<m.d.yyyy> - Forecast Exhibits - <district> - <N> Lots - Tierra Financial
   Advisors.xlsx` — CPA-style forecast exhibits for the base case and two
   development stress scenarios. The exhibits are their own deliverable, not an
@@ -422,6 +457,41 @@ retires in full, where the workbook carries a hand-typed round number.
 
 Those figures are pinned in `tests/test_model.py`, so a change that moves them
 fails the suite.
+
+## Special assessment bonds
+
+Set **Inputs!ASSESSMENT_BONDS** to `Yes` and the model also sizes a special
+assessment program — a second, separate security. A Utah PID may assess the
+benefited lots under the **Assessment Area Act (UCA Title 11, Chapter 42)** and
+issue bonds secured by those liens. An assessment is a lien on the lot, not a
+charge against the levy, so assessment par does **not** consume room under the
+§ 17D-4-303 fifteen-mill cap and the installments are **not** netted from the
+revenue the senior lien is wrapped around. A test pins this: turning the
+program on does not move the senior sizing by a dollar.
+
+Each series is dated `ASSESSMENT_FUND_TIMING` years before the first lot
+delivery it funds and funds `ASSESSMENT_FUND_TERM` years of deliveries — timing
+1, term 3 means a 2026 series funds the 2027–2029 deliveries and the next is
+sold in 2029. **Lots delivered before the first series' first funded year are
+not financed**, and the workbook says how many.
+
+The per-product sizing sits on the **Development Inputs** sheet, under *Special
+Assessment*:
+
+| Row | Blank means |
+|---|---|
+| Developer Assessment Bond Initial Amount (Per Lot) | size the series to the maximum the finished-lot value supports at the LTV |
+| Resident Assessment Bond Remaining Amount (Per Lot) | the developer pays off the whole balance; nothing stays with the homeowner |
+| LTV (`3:1` or `3,1`) | the Inputs-tab fallback; reported as a **test**, it does not change the assessment |
+| Resident Annual Installment Payment | — entered, it **solves** the balance left on each lot so the level payment to final maturity equals it |
+
+Three tabs are written, and only when the program is on: **Assessment Bonds**
+(series, sources and uses, the value-to-lien test), **Assessment Cash Flow**
+(the annual roll, with the installment split between the developer on lots it
+still holds and the homeowner on lots that have converted) and **Assessment —
+Homeowner Cost**. The last of those, and the foot of the first, are the only
+places the two securities are added together, because the sum of the mill levy
+and the installment is what a buyer actually pays.
 
 ## Two things worth reading in the output
 

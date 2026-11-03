@@ -322,6 +322,35 @@ class ModelConfig:
     # outstanding is billed that November, so year 2 is the first with a full
     # year of collections to charge against.
     district_cost_start_year: Optional[int] = None   # DISTRICT_COST_START_YEAR
+
+    # ── Special assessment issuance program ─────────────────────────────────
+    # Off unless ASSESSMENT_BONDS says Yes.  An assessment is a lien on the lot,
+    # not a charge on the levy, so none of this touches the mill levy sizing:
+    # the par does not consume room under the § 17D-4-303 cap and the
+    # installments are not netted from the revenue the senior lien wraps.
+    assessment_bonds: str = "No"        # ASSESSMENT_BONDS (Yes/No)
+    assessment_rate: float = 0.07       # BONDRATE_SPECIAL
+    assessment_capi_years: int = 3      # CAPI_YEARS_SA (separate from CAPI_TERM)
+    assessment_dsrf: str = "Yes"        # DSRF_SA (Yes/No)
+    assessment_dsrf_pct: float = 1.0    # DSRF_SA_FUND_PRC — share of the 3-prong amount funded
+    assessment_fund_timing: float = 1.0 # ASSESSMENT_FUND_TIMING — years a series is dated ahead of the lots it funds
+    assessment_fund_term: int = 3       # ASSESSMENT_FUND_TERM — delivery years each series funds
+    #: {product name: {"developer", "resident", "ltv", "installment"}} from the
+    #: Development Inputs 'Special Assessment' block; empty ⇒ the engine falls
+    #: back to the whole-program figures above.
+    assessment_products: dict = field(default_factory=dict)
+    #: Senior par the dollar COI was quoted against, set by the model run so an
+    #: assessment series can carry COI at the same RATE (see the Arizona port).
+    _senior_par_for_coi: float = 0.0
+
+    @property
+    def assessment_term_yrs(self) -> int:
+        """Assessment installments run the senior lien's term."""
+        return int(self.final_mat_yrs)
+
+    @property
+    def assessment_bonds_on(self) -> bool:
+        return str(self.assessment_bonds).strip().lower().startswith("y")
     resid_new_value_add: str = "Yes"    # RESID_NEW_VALUE_ADD (senior)
     comm_new_value_add: str = "No"      # COMM_NEW_VALUE_ADD (senior)
 

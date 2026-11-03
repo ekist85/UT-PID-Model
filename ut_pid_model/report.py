@@ -1556,6 +1556,7 @@ def build_excel_report(
     dev=None,
     series_c=None,
     contribution=None,
+    assessment=None,
     output_path: str = "output/ut_pid_model_output.xlsx",
 ) -> str:
     wb = openpyxl.Workbook()
@@ -1616,6 +1617,19 @@ def build_excel_report(
 
     if series_c is not None:
         _build_series_c_sheet(wb.create_sheet("Series C Cash-Flow"), cfg, series_c)
+
+    # The special assessment program — a separate security from the mill levy,
+    # so it gets its own tabs rather than rows on the senior sheets.
+    if assessment is not None and assessment.enabled:
+        from .assessment_report import (build_assessment_sheet,
+                                        build_assessment_cashflow_sheet,
+                                        build_assessment_homeowner_sheet)
+        build_assessment_sheet(wb.create_sheet("Assessment Bonds"), cfg, assessment,
+                               sm=sm, dev=dev)
+        build_assessment_cashflow_sheet(wb.create_sheet("Assessment Cash Flow"),
+                                        cfg, assessment)
+        build_assessment_homeowner_sheet(wb.create_sheet("Assessment - Homeowner Cost"),
+                                         cfg, assessment)
 
     # Optional-redemption (call) schedule — derived output.
     _build_call_schedule_sheet(wb.create_sheet("Call Schedule"), cfg, refunding_result)

@@ -131,6 +131,14 @@ _SPECS: list[tuple] = [
     ("District Costs", "O&M Expense Growth Rate", "OM_GROWTH_RATE", "om_growth_rate", "pct", "annual inflation on the O&M base"),
     ("District Costs", "O&M Expense Taxable Value Limit", "OM_EXPENSE_AV_LIMIT", "om_expense_av_limit", "float", "$ — above this taxable value the charge stops; 0 ⇒ no limit"),
     ("District Costs", "First Year District Costs Are Charged", "DISTRICT_COST_START_YEAR", "district_cost_start_year", "int", "blank ⇒ two years after closing"),
+
+    ("Special Assessment Issuance Program", "Assessment Bonds", "ASSESSMENT_BONDS", "assessment_bonds", "yesno", "Yes/No — Yes = also size special assessment bonds (separate from the mill levy bonds); No = not sized, nothing in the memo or workbook"),
+    ("Special Assessment Issuance Program", "Special Assessment Interest Rate", "BONDRATE_SPECIAL", "assessment_rate", "pct", "Assessment bonds amortize over the Final Maturity above at this rate"),
+    ("Special Assessment Issuance Program", "Capitalized Interest (yrs)", "CAPI_YEARS_SA", "assessment_capi_years", "int", "Years of interest on each assessment series funded from bond proceeds (separate from the mill levy Capitalized Interest); lot-owner installments start after this period"),
+    ("Special Assessment Issuance Program", "Debt Service Reserve Fund", "DSRF_SA", "assessment_dsrf", "yesno", "Yes/No"),
+    ("Special Assessment Issuance Program", "Debt Service Reserve Fund % of Amount", "DSRF_SA_FUND_PRC", "assessment_dsrf_pct", "pct", "share of the three-prong reserve actually funded from proceeds"),
+    ("Special Assessment Issuance Program", "Timing to Fund Lot Construction (Years Prior)", "ASSESSMENT_FUND_TIMING", "assessment_fund_timing", "float", "Year(s) prior to the first lot delivery it funds that each Developer Bond series is dated (funds in hand to build the lots)"),
+    ("Special Assessment Issuance Program", "Roll Forward Years to Fund Future Lot Deliveries", "ASSESSMENT_FUND_TERM", "assessment_fund_term", "int", "Years of future lot-delivery phases each Developer Bond series funds (3 = one series covers delivery years 1-3, the next 4-6, …)"),
 ]
 
 # Range names that live on DeveloperProjections rather than ModelConfig.
@@ -363,7 +371,13 @@ def write_inputs_workbook(
 _NPROD = 8   # product columns on the Development Inputs grids
 
 
-def _write_dev_sheet(ws, dev: DeveloperProjections):
+def _write_dev_sheet(ws, dev: DeveloperProjections, cfg=None):
+    """Utah's Development Inputs layout — see ut_pid_model/development_inputs.py."""
+    from .development_inputs import write_dev_sheet
+    return write_dev_sheet(ws, dev, cfg)
+
+
+def _write_dev_sheet_colorado(ws, dev: DeveloperProjections):
     """
     Development Inputs laid out like the Excel "Residential Development" sheet:
     Product Setup, then a Lot Delivery grid and a Home Closings grid (year rows ×
@@ -904,7 +918,9 @@ def load_inputs_workbook(path: str) -> tuple[ModelConfig, DeveloperProjections]:
     if res_sched:
         overrides_cfg["residential_rate_schedule"] = res_sched
     cfg = ModelConfig(**overrides_cfg)
-    dev = _load_dev_sheet(wb, overrides_dev)
+    # The Development Inputs sheet also carries the per-product assessment
+    # sizing assumptions, so it is read with the config in hand.
+    dev = _load_dev_sheet(wb, overrides_dev, cfg)
     return cfg, dev
 
 
@@ -922,7 +938,13 @@ def _find_markers(dws):
     return markers
 
 
-def _load_dev_sheet(wb, overrides_dev) -> DeveloperProjections:
+def _load_dev_sheet(wb, overrides_dev, cfg=None) -> DeveloperProjections:
+    """Utah's Development Inputs reader — see ut_pid_model/development_inputs.py."""
+    from .development_inputs import load_dev_sheet
+    return load_dev_sheet(wb, overrides_dev, cfg)
+
+
+def _load_dev_sheet_colorado(wb, overrides_dev) -> DeveloperProjections:
     from .development import ProductLine
     dev_kwargs = dict(overrides_dev)
     if "Development Inputs" not in wb.sheetnames:

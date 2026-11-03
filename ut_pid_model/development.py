@@ -65,6 +65,13 @@ class ProductLine:
     home_closings: dict[int, int] = field(default_factory=dict)    # units closed by year
     asp_base: float = 515_000                                      # base average selling price
     asp_base_year: int = 2024
+    #: Units absorbed per month.  Paces a Lot Delivery or Home Closings column
+    #: left blank on the Development Inputs sheet; 0 ⇒ that grid must be entered.
+    pacing_per_month: float = 0.0
+    #: Already on the roll when the district is formed (Existing Development).
+    existing_homes: int = 0
+    existing_home_asp: float = 0.0      # blank ⇒ asp_base
+    existing_lots: int = 0
 
     def asp(self, year: int, inflation: float, inflation_start_year: int) -> float:
         # Price is flat at the base until inflation starts, then compounds one year
@@ -83,16 +90,28 @@ class ProductLine:
         """Total planned units: the 'Total Units' input, or the closings total."""
         return self.existing_units or int(round(sum(self.home_closings.values())))
 
+    @property
+    def existing_home_price(self) -> float:
+        """ASP of the homes already standing — the Base ASP unless overridden."""
+        return self.existing_home_asp or self.asp_base
+
     def stressed(self, pace_factor: float) -> "ProductLine":
+        """A slower copy.  Only the SCHEDULES slow down: what is already built
+        and what the product ultimately sells are unchanged by the pace."""
+        carry = dict(asp_base=self.asp_base, asp_base_year=self.asp_base_year,
+                     pacing_per_month=self.pacing_per_month,
+                     existing_homes=self.existing_homes,
+                     existing_home_asp=self.existing_home_asp,
+                     existing_lots=self.existing_lots)
         if pace_factor >= 1.0:
             return ProductLine(self.name, self.existing_units,
                                dict(self.lot_deliveries), dict(self.home_closings),
-                               self.asp_base, self.asp_base_year)
+                               **carry)
         return ProductLine(
             self.name, self.existing_units,
             _slow_schedule(self.lot_deliveries, pace_factor),
             _slow_schedule(self.home_closings, pace_factor),
-            self.asp_base, self.asp_base_year)
+            **carry)
 
 
 @dataclass

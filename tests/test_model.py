@@ -1618,3 +1618,217 @@ def test_port_is_up_to_date_with_colorado():
     import port_from_colorado as port
     rc = port.main(["--source", CO_REPO, "--check"])
     assert rc == 0, "port patches no longer apply — Colorado has moved"
+
+
+# ── Special assessment bonds (Inputs!ASSESSMENT_BONDS) ───────────────────────
+
+AZ_REPO = os.path.join(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__)))), "AZ-CFD-Model")
+
+UPLOADED_INPUTS = os.path.join(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))), "Viridian PID Inputs (Nov 3 2026).xlsx")
+
+
+@pytest.mark.skipif(not os.path.isdir(os.path.join(AZ_REPO, "cfd_model")),
+                    reason="Arizona model not checked out alongside this repo")
+def test_assessment_engine_is_up_to_date_with_arizona():
+    """``assessment_bonds`` is ported from Arizona, not forked.  A failure here
+    means Arizona moved under a patch anchor — re-read it, do not hand-edit."""
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "tools"))
+    import port_assessment_from_arizona as port
+    assert port.main(["--source", AZ_REPO, "--check"]) == 0
+
+
+@pytest.fixture(scope="module")
+def uploaded():
+    """The Viridian inputs workbook as the user maintains it."""
+    if not os.path.isfile(UPLOADED_INPUTS):
+        pytest.skip("uploaded inputs workbook not present")
+    from ut_pid_model import load_inputs_workbook
+    cfg, dev = load_inputs_workbook(UPLOADED_INPUTS)
+    return cfg, dev
+
+
+def test_every_product_column_is_read(uploaded):
+    """Products sit in D..K with a Total in C.  The fixed-column reader this
+    replaces read C..J, so the eighth product vanished without a word — and the
+    lot count stayed at a default from a different deal."""
+    cfg, dev = uploaded
+    names = [p.name for p in dev.products]
+    assert len(names) == 8, names
+    assert "1/2-Acre" in names
+    assert dev.total_lots == 597
+    assert sum(p.total_units for p in dev.products) == 597
+
+
+def test_pacing_prorates_a_grid_left_blank():
+    """A product with Pacing Per Month and no grid is paced, not read as zero:
+    4 a month is 48 a year until Total Units runs out, and homes follow the
+    lots a year behind and never run ahead of them."""
+    from ut_pid_model.development_inputs import load_dev_sheet, write_dev_sheet
+    import openpyxl
+    from ut_pid_model.development import DeveloperProjections, ProductLine
+    wb = openpyxl.Workbook()
+    dev = DeveloperProjections(products=[ProductLine(
+        name="Paced", existing_units=100, lot_deliveries={}, home_closings={},
+        asp_base=400_000, asp_base_year=2026, pacing_per_month=4.0)])
+    write_dev_sheet(wb.create_sheet("Development Inputs"), dev, None)
+    got = load_dev_sheet(wb, {}, None)
+    p = got.products[0]
+    assert sum(p.lot_deliveries.values()) == 100
+    assert max(p.lot_deliveries.values()) == 48          # 4/month x 12
+    assert sum(p.home_closings.values()) == 100
+    # Homes start a year after the lots and never exceed the lots on the ground.
+    assert min(p.home_closings) == min(p.lot_deliveries) + 1
+    for y in p.home_closings:
+        closed = sum(n for yy, n in p.home_closings.items() if yy <= y)
+        ready = sum(n for yy, n in p.lot_deliveries.items() if yy <= y - 1)
+        assert closed <= ready, (y, closed, ready)
+
+
+def test_entered_grids_are_never_overwritten_by_pacing(uploaded):
+    """Pacing fills a blank grid; it does not second-guess an entered one."""
+    _cfg, dev = uploaded
+    for p in dev.products:
+        assert p.pacing_per_month > 0
+        assert sum(p.lot_deliveries.values()) == p.total_units, p.name
+        assert sum(p.home_closings.values()) == p.total_units, p.name
+
+
+def test_aggregate_total_column_is_allocated_across_products():
+    """A year entered only in the Total column is split across the products by
+    their share of the units still to come, never past a product's Total Units."""
+    from ut_pid_model.development_inputs import load_dev_sheet, write_dev_sheet
+    import openpyxl
+    from ut_pid_model.development import DeveloperProjections, ProductLine
+    wb = openpyxl.Workbook()
+    dev = DeveloperProjections(products=[
+        ProductLine(name="A", existing_units=30, asp_base=400_000, asp_base_year=2026),
+        ProductLine(name="B", existing_units=10, asp_base=500_000, asp_base_year=2026),
+    ])
+    ws = wb.create_sheet("Development Inputs")
+    write_dev_sheet(ws, dev, None)
+    # Find the Lot Delivery grid's first year row and enter a Total only.
+    from ut_pid_model.development_inputs import _anchors
+    a = _anchors(ws)
+    row = a["lotdel"] + 2
+    ws.cell(row=row, column=3, value=20)            # column C — the aggregate Total
+    got = load_dev_sheet(wb, {}, None)
+    by = {p.name: sum(p.lot_deliveries.values()) for p in got.products}
+    assert sum(by.values()) == 20, by
+    assert by["A"] == 15 and by["B"] == 5, by        # 30:10 of 20
+
+
+def test_assessment_program_sizes_from_the_uploaded_inputs(uploaded):
+    """End to end on the user's own workbook: the program sizes, every series
+    is dated ahead of the lots it funds, and the lots add up."""
+    from ut_pid_model import SummaryModel
+    from ut_pid_model.assessment_bonds import AssessmentBondAnalysis
+    cfg, dev = uploaded
+    assert cfg.assessment_bonds_on
+    built = dev.build(cfg)
+    sm = SummaryModel(cfg, built).build()
+    ab = AssessmentBondAnalysis(cfg, sm).run()
+    assert ab.enabled and ab.series
+    prog = ab.programs[0]
+    for s in ab.series:
+        # Dated ASSESSMENT_FUND_TIMING years before the first delivery it funds.
+        assert s.dated_date.year == s.window_start - int(cfg.assessment_fund_timing)
+        assert s.window_end - s.window_start < cfg.assessment_fund_term
+        assert s.par_amount > 0 and s.lots > 0
+    # Every lot is either financed or delivered before the first series funds.
+    assert ab.total_lots + prog.units_unfunded_early == sum(
+        sum(p.lot_deliveries.values()) for p in built.products)
+    # Proceeds are par less the three funded uses, to the cent.
+    assert ab.total_proceeds == pytest.approx(
+        ab.total_par - ab.total_coi - ab.total_reserve
+        - sum(s.capitalized_interest for s in ab.series), abs=1)
+
+
+def test_assessment_is_separate_security_from_the_mill_levy(uploaded):
+    """An assessment is a lien on the lot, not a charge on the levy: turning the
+    program on must not move the senior sizing by a dollar."""
+    from ut_pid_model import SummaryModel, SeniorLienSizer, size_senior_with_dynamic_dsrf, CallProvisions
+    from ut_pid_model.assessment_bonds import AssessmentBondAnalysis
+    cfg, dev = uploaded
+
+    def _senior(c):
+        built = dev.build(c)
+        sm = SummaryModel(c, built).build()
+        return size_senior_with_dynamic_dsrf(
+            SeniorLienSizer(c, sm),
+            name="Senior", rate=c.senior_interest_rate, coverage=c.dsc_senior,
+            delivery=c.delivery, first_principal_year=c.senior_first_principal_year,
+            final_year=c.senior_final_year, capi_end=c.capi_end_date,
+            call_provisions=CallProvisions(c.premium_call_date, c.par_call_date,
+                                           c.premium_call_price)), sm
+
+    on, sm_on = _senior(cfg)
+    AssessmentBondAnalysis(cfg, sm_on).run()
+    off = replace(cfg, assessment_bonds="No")
+    assert not off.assessment_bonds_on
+    par_off, _ = _senior(off)
+    assert on.par_amount == par_off.par_amount
+    assert on.total_net_ds == pytest.approx(par_off.total_net_ds)
+
+
+def test_assessment_tabs_appear_only_when_the_program_is_on(deliverables):
+    """The repo's own base case has no assessments, so the workbook must not
+    carry empty assessment tabs."""
+    import openpyxl
+    out, _r = deliverables
+    wb = openpyxl.load_workbook(_deliverable(out, _r, WORKBOOK))
+    assert _r["assessment"] is None
+    assert not [s for s in wb.sheetnames if s.startswith("Assessment")]
+
+
+@pytest.fixture(scope="module")
+def assessed_run(tmp_path_factory):
+    """A full export driven by the uploaded workbook, with assessments on."""
+    if not os.path.isfile(UPLOADED_INPUTS):
+        pytest.skip("uploaded inputs workbook not present")
+    out = tmp_path_factory.mktemp("assessed")
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from main import run_model
+    return out, run_model(export=True, output_dir=str(out), inputs_path=UPLOADED_INPUTS)
+
+
+def test_assessment_workbook_tabs_and_memo_section(assessed_run):
+    """With the program on, the workbook carries its three tabs and the memo
+    states the program — including what a homeowner pays for both securities."""
+    import openpyxl
+    out, r = assessed_run
+    ab = r["assessment"]
+    assert ab is not None and ab.enabled
+    base = _deliverable(out, r, WORKBOOK)
+    wb = openpyxl.load_workbook(base)
+    for tab in ("Assessment Bonds", "Assessment Cash Flow",
+                "Assessment - Homeowner Cost"):
+        assert tab in wb.sheetnames, wb.sheetnames
+    # The series table foots to the program total.
+    ws = wb["Assessment Bonds"]
+    # Only the series table — the Sources & Uses block below repeats the series
+    # labels with a different meaning in that column.
+    stop = next(rr for rr in range(1, 60)
+                if str(ws.cell(row=rr, column=1).value or "").startswith("Sources & Uses"))
+    pars = [ws.cell(row=rr, column=6).value for rr in range(1, stop)
+            if str(ws.cell(row=rr, column=1).value or "").startswith("Series ")]
+    assert len(pars) == len(ab.series)
+    assert sum(pars) == pytest.approx(ab.total_par, abs=1)
+    html = _deliverable(out, r, MEMO).read_text()
+    assert "Special Assessment Bonds" in html
+    assert "Assessment Area Act" in html
+    assert "17D-4-303" in html
+
+
+def test_assessment_cash_flow_retires_every_dollar(assessed_run):
+    """Principal paid over the program equals the par issued — the roll ends
+    with nothing outstanding."""
+    _out, r = assessed_run
+    ab = r["assessment"]
+    df = ab.programs[0].annual
+    principal = (df["scheduled_principal"].sum()
+                 + df["developer_payoff_principal"].sum())
+    assert principal == pytest.approx(ab.total_par, rel=1e-6)
+    assert float(df["outstanding_end"].iloc[-1]) == pytest.approx(0.0, abs=1)
